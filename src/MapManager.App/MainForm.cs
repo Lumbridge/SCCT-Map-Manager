@@ -61,12 +61,18 @@ public sealed class MainForm : Form
         var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(24), BackColor = Pale };
         outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));Controls.Add(outer);
-        var header = Table(2, 70, 30);
-        header.AutoSize = false;header.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
+        var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, RowCount = 2, Margin = Padding.Empty };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180));
+        header.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         var title = new Label { Text = "SCCT MAP MANAGER", Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
-        header.Controls.Add(title, 0, 0);var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
-        actions.Controls.Add(refresh);actions.Controls.Add(repo);header.Controls.Add(actions, 1, 0);
-        header.Controls.Add(target, 0, 1);header.Controls.Add(folder, 1, 1);outer.Controls.Add(header, 0, 0);
+        foreach (var button in new[] { repo, refresh, backups, folder })
+        {
+            button.AutoSize = false;button.Height = 36;button.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+            button.Margin = new Padding(8, 0, 0, 8);button.Padding = new Padding(6, 0, 6, 0);
+        }
+        header.Controls.Add(title, 0, 0);header.Controls.Add(repo, 1, 0);header.Controls.Add(refresh, 2, 0);
+        header.Controls.Add(target, 0, 1);header.Controls.Add(backups, 1, 1);header.Controls.Add(folder, 2, 1);outer.Controls.Add(header, 0, 0);
         var filters = Table(3, 54, 23, 23);filters.AutoSize = false;filters.Padding = new Padding(0, 6, 0, 12);
         filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         category.Items.AddRange(["All collections", "Community", "Originals", "Enhanced", "Recovered"]);category.SelectedIndex = 0;
@@ -89,7 +95,7 @@ public sealed class MainForm : Form
         var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.Add(enable);mapActions.Controls.Add(disable);mapActions.Controls.Add(download);details.Controls.Add(mapActions, 0, 4);
         var notesTitle = new Label { Text = "MAP NOTES & DEPENDENCIES", UseMnemonic = false, Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 8, 0, 10) };details.Controls.Add(notesTitle, 0, 5);details.Controls.Add(notes, 0, 6);
         split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 2);
-        var libraryFooter = Table(2, 65, 35);libraryFooter.Padding = new Padding(0, 12, 0, 8);libraryFooter.Controls.Add(count, 0, 0);libraryFooter.Controls.Add(backups, 1, 0);libraryFooter.Controls.Add(catalogStatus, 0, 1);libraryFooter.SetColumnSpan(catalogStatus, 2);outer.Controls.Add(libraryFooter, 0, 3);
+        var libraryFooter = Table(1, 100);libraryFooter.Padding = new Padding(0, 12, 0, 8);libraryFooter.Controls.Add(count, 0, 0);libraryFooter.Controls.Add(catalogStatus, 0, 1);outer.Controls.Add(libraryFooter, 0, 3);
         var footer = Table(2, 88, 12);footer.Controls.Add(operationStatus, 0, 0);footer.Controls.Add(cancel, 1, 0);cancel.Visible = false;footer.Controls.Add(progress, 0, 1);footer.SetColumnSpan(progress, 2);outer.Controls.Add(footer, 0, 4);
         operationStatus.Text = "Choose a map to download, enable or disable.";
     }

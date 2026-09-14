@@ -140,7 +140,13 @@ if (treeArg >= 0)
 {
     var catalog = CatalogParser.Parse(await File.ReadAllTextAsync(args[treeArg + 1]));
     Check(catalog.Maps.Count(m => m.Category == "Community") == 56, "discover all 56 community maps");
-    Check(catalog.Maps.Any(m => m.Category == "Originals" && m.Name == "Shipment" && m.Version == "v1.1"), "select the latest original Shipment release");
+    using var tree = JsonDocument.Parse(await File.ReadAllTextAsync(args[treeArg + 1]));
+    var shipmentVersions = tree.RootElement.GetProperty("tree").EnumerateArray()
+        .Select(entry => entry.GetProperty("path").GetString()!)
+        .Where(path => path.StartsWith("release/ShipD/") && path.EndsWith("/Packages/Maps/ShipD.sdc"))
+        .Select(path => path.Split('/')[2]).Distinct()
+        .OrderByDescending(version => Version.Parse(version.TrimStart('v').Contains('.') ? version.TrimStart('v') : version.TrimStart('v') + ".0"));
+    Check(catalog.Maps.Any(m => m.Category == "Originals" && m.Name == "Shipment" && m.Version == shipmentVersions.First()), "select the latest original Shipment release");
     Check(catalog.Maps.Any(m => m.Category == "Enhanced") && catalog.Maps.Count(m => m.Category == "Recovered") == 4, "include enhanced and recovered collections");
     Check(catalog.Maps.Where(m => m.Category == "Community").All(m => m.Files.Any(f => f.Source.StartsWith("community/_shared/"))), "bundle shared community dependencies with each map");
     Check(catalog.Maps.All(m => m.Files.All(f => !f.Source.Contains("/src/") && !f.Source.EndsWith(".exe"))), "catalog excludes source artwork and executables");
