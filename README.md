@@ -90,8 +90,3 @@ For a UI smoke check against a disposable installation:
 
 The smoke check refreshes the catalog, tests search/collection filters and writes
 a screenshot and report. It does not install or disable maps.
-
-## Repository status
-
-Development is currently local. The public GitHub repository has been created,
-but code, commits and release files must not be pushed until Ryan approves.
