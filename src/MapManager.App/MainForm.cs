@@ -1,0 +1,221 @@
+using System.Diagnostics;
+using MapManager.Core;
+
+namespace MapManager.App;
+
+public sealed class MainForm : Form
+{
+    private static readonly Color Ink = Color.FromArgb(28, 39, 54), Accent = Color.FromArgb(0, 104, 118), Pale = Color.FromArgb(241, 245, 249);
+    private readonly IRepositoryClient repository;
+    private MapStore store;
+    private readonly TextBox search = new() { PlaceholderText = "Search maps or package names", Dock = DockStyle.Fill };
+    private readonly ComboBox category = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly ComboBox statusFilter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
+    private readonly DataGridView grid = new() { Dock = DockStyle.Fill, ReadOnly = true, MultiSelect = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+        AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false, RowHeadersVisible = false, AutoGenerateColumns = false,
+        BackgroundColor = Color.White, BorderStyle = BorderStyle.None, CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Pale };
+    private readonly Label mapName = new() { AutoSize = true, MaximumSize = new Size(360, 0), Font = new Font("Segoe UI", 20, FontStyle.Bold) };
+    private readonly Label metadata = new() { AutoSize = true, MaximumSize = new Size(360, 0), ForeColor = Color.DimGray };
+    private readonly Label summary = new() { AutoSize = true, MaximumSize = new Size(360, 0) };
+    private readonly CheckBox source = new() { AutoSize = true, Text = "Include editable source maps (MapsEd)" };
+    private readonly Button download = Button("Download / update"), enable = Button("Enable map", true), disable = Button("Disable map"), refresh = Button("Refresh catalog"), folder = Button("Change folder");
+    private readonly Button backups = Button("Open backups"), repo = Button("Map repository"), cancel = Button("Cancel");
+    private readonly RichTextBox notes = new() { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Color.White, DetectUrls = true, WordWrap = true };
+    private readonly Label target = new() { AutoSize = false, ForeColor = Color.DimGray, Dock = DockStyle.Fill, AutoEllipsis = true, UseMnemonic = false };
+    private readonly Label count = new() { AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray };
+    private readonly Label catalogStatus = new() { AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray };
+    private readonly Label operationStatus = new() { AutoSize = true, Dock = DockStyle.Fill };
+    private readonly ProgressBar progress = new() { Dock = DockStyle.Fill, Height = 8 };
+    private CancellationTokenSource? operation, notesCancel;
+    private bool busy, closing;
+    private readonly TaskCompletionSource initial = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    public Task InitialLoad => initial.Task;
+    public Task NotesLoad { get; private set; } = Task.CompletedTask;
+    public int VisibleMapCount => grid.Rows.Count;
+    public string CatalogStatus => catalogStatus.Text;
+    private MapEntry? Selected => grid.CurrentRow?.Tag as MapEntry;
+
+    public MainForm(string root, IRepositoryClient repository)
+    {
+        this.repository = repository;store = new MapStore(root, repository, () => Program.GuardGame(root));
+        SeedCatalog();
+        Text = "SCCT Map Manager";Font = new Font("Segoe UI", 10);ForeColor = Ink;BackColor = Pale;
+        AutoScaleDimensions = new SizeF(96, 96);AutoScaleMode = AutoScaleMode.Dpi;MinimumSize = new Size(1050, 740);Size = new Size(1280, 900);StartPosition = FormStartPosition.CenterScreen;
+        BuildLayout();WireEvents();
+        target.Text = store.GameRoot;FillMaps();
+        Shown += async (_, _) => { try { await Run("Checking the map catalog…", ct => store.RefreshAsync(ct)); } finally { initial.TrySetResult(); } };
+    }
+    private static Button Button(string text, bool primary = false) => new()
+    {
+        Text = text, AutoSize = true, MinimumSize = new Size(110, 36), FlatStyle = FlatStyle.Flat,
+        BackColor = primary ? Accent : Color.White, ForeColor = primary ? Color.White : Ink, Cursor = Cursors.Hand,
+        Padding = new Padding(10, 3, 10, 3), Margin = new Padding(0, 0, 8, 8)
+    };
+    private static TableLayoutPanel Table(int columns, params float[] widths)
+    {
+        var t = new TableLayoutPanel { ColumnCount = columns, Dock = DockStyle.Fill, AutoSize = true, Margin = Padding.Empty };
+        foreach (var w in widths) t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, w));return t;
+    }
+    private void BuildLayout()
+    {
+        var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(24), BackColor = Pale };
+        outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));Controls.Add(outer);
+        var header = Table(2, 70, 30);
+        header.AutoSize = false;header.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
+        var title = new Label { Text = "SCCT MAP MANAGER", Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
+        header.Controls.Add(title, 0, 0);var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft };
+        actions.Controls.Add(refresh);actions.Controls.Add(repo);header.Controls.Add(actions, 1, 0);
+        header.Controls.Add(target, 0, 1);header.Controls.Add(folder, 1, 1);outer.Controls.Add(header, 0, 0);
+        var filters = Table(3, 54, 23, 23);filters.AutoSize = false;filters.Padding = new Padding(0, 6, 0, 12);
+        filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
+        category.Items.AddRange(["All collections", "Community", "Originals", "Enhanced", "Recovered"]);category.SelectedIndex = 0;
+        statusFilter.Items.AddRange(["All maps", "Enabled", "Disabled", "Updates available", "Downloaded", "Not downloaded"]);statusFilter.SelectedIndex = 0;
+        filters.Controls.Add(new Label { Text = "Search maps", AutoSize = true }, 0, 0);filters.Controls.Add(new Label { Text = "Collection", AutoSize = true }, 1, 0);filters.Controls.Add(new Label { Text = "Show", AutoSize = true }, 2, 0);
+        filters.Controls.Add(search, 0, 1);filters.Controls.Add(category, 1, 1);filters.Controls.Add(statusFilter, 2, 1);outer.Controls.Add(filters, 0, 1);
+        var split = new SplitContainer { Size = new Size(1200, 580), Dock = DockStyle.Fill, SplitterDistance = 740, FixedPanel = FixedPanel.Panel2, BackColor = Pale, SplitterWidth = 16 };
+        split.Panel1MinSize = 440;split.Panel2MinSize = 345;
+        grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(229, 236, 240), ForeColor = Ink, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(8) };
+        grid.DefaultCellStyle = new DataGridViewCellStyle { Padding = new Padding(8, 4, 4, 4), SelectionBackColor = Color.FromArgb(218, 240, 242), SelectionForeColor = Ink };
+        grid.EnableHeadersVisualStyles = false;grid.ColumnHeadersHeight = 42;grid.RowTemplate.Height = 42;
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Map", HeaderText = "Map", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 140, FillWeight = 135 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Collection", HeaderText = "Collection", Width = 125 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 145, FillWeight = 110 });
+        split.Panel1.Controls.Add(grid);
+        var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, BackColor = Color.White, Padding = new Padding(18) };
+        for (int i = 0; i < 6; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        details.Controls.Add(mapName, 0, 0);details.Controls.Add(metadata, 0, 1);summary.Margin = new Padding(0, 14, 0, 14);details.Controls.Add(summary, 0, 2);
+        source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 3);
+        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.Add(enable);mapActions.Controls.Add(disable);mapActions.Controls.Add(download);details.Controls.Add(mapActions, 0, 4);
+        var notesTitle = new Label { Text = "MAP NOTES & DEPENDENCIES", UseMnemonic = false, Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 8, 0, 10) };details.Controls.Add(notesTitle, 0, 5);details.Controls.Add(notes, 0, 6);
+        split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 2);
+        var libraryFooter = Table(2, 65, 35);libraryFooter.Padding = new Padding(0, 12, 0, 8);libraryFooter.Controls.Add(count, 0, 0);libraryFooter.Controls.Add(backups, 1, 0);libraryFooter.Controls.Add(catalogStatus, 0, 1);libraryFooter.SetColumnSpan(catalogStatus, 2);outer.Controls.Add(libraryFooter, 0, 3);
+        var footer = Table(2, 88, 12);footer.Controls.Add(operationStatus, 0, 0);footer.Controls.Add(cancel, 1, 0);cancel.Visible = false;footer.Controls.Add(progress, 0, 1);footer.SetColumnSpan(progress, 2);outer.Controls.Add(footer, 0, 4);
+        operationStatus.Text = "Choose a map to download, enable or disable.";
+    }
+    private void WireEvents()
+    {
+        search.TextChanged += (_, _) => FillMaps();category.SelectedIndexChanged += (_, _) => FillMaps();statusFilter.SelectedIndexChanged += (_, _) => FillMaps();
+        grid.SelectionChanged += (_, _) => NotesLoad = Detail();
+        refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
+        repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
+        backups.Click += (_, _) => { var path = SafePaths.Under(store.DataRoot, "Backups");Directory.CreateDirectory(path);Open(path); };
+        cancel.Click += (_, _) => operation?.Cancel();
+        download.Click += async (_, _) => { if (Selected is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => store.DownloadAsync(map, include, Reporter(), ct)); } };
+        enable.Click += async (_, _) =>
+        {
+            if (Selected is not { } map) return;bool include = source.Checked;
+            await Run("Enabling " + map.Name, async ct =>
+            {
+                if (store.State.Installed.TryGetValue(map.Id, out var installed) && !installed.Enabled &&
+                    (!store.State.Downloads.TryGetValue(map.Id, out var cached) || (!installed.External && cached.Fingerprint == installed.Entry.Fingerprint)))
+                    await store.RestoreDisabledAsync(map, ct);
+                else await store.EnableAsync(map, include, Reporter(), ct);
+            });
+        };
+        disable.Click += async (_, _) => { if (Selected is { } map) await Run("Disabling " + map.Name, ct => store.DisableAsync(map, ct)); };
+        notes.LinkClicked += (_, e) => { if (Uri.TryCreate(e.LinkText, UriKind.Absolute, out var uri) && uri.Scheme == "https") Open(uri.AbsoluteUri); };
+        folder.Click += (_, _) =>
+        {
+            using var picker = new FolderBrowserDialog { Description = "Choose an SCCT Versus installation", UseDescriptionForTitle = true, SelectedPath = store.GameRoot };
+            if (picker.ShowDialog(this) != DialogResult.OK || Path.GetFullPath(picker.SelectedPath) == store.GameRoot) return;
+            try
+            {
+                string root = picker.SelectedPath;var replacement = new MapStore(root, repository, () => Program.GuardGame(root));
+                store.Dispose();store = replacement;SeedCatalog();target.Text = store.GameRoot;FillMaps();_ = Run("Checking the catalog…", ct => store.RefreshAsync(ct));
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Cannot open installation", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        };
+        FormClosing += (_, e) =>
+        {
+            if (busy) { e.Cancel = true;closing = true;operation?.Cancel();operationStatus.Text = "Finishing safely before closing…"; }
+            else { notesCancel?.Cancel(); }
+        };
+        FormClosed += (_, _) => { notesCancel?.Dispose();store.Dispose(); };
+    }
+    private static void Open(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    private void SeedCatalog()
+    {
+        if (store.Catalog != null) return;
+        using var stream = typeof(MainForm).Assembly.GetManifestResourceStream("MapManager.CatalogSeed")!;
+        using var reader = new StreamReader(stream);store.UseFallbackCatalog(CatalogParser.Parse(reader.ReadToEnd()));
+    }
+    private IProgress<TransferProgress> Reporter() => new Progress<TransferProgress>(p =>
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        BeginInvoke((Action)(() =>
+        {
+            if (IsDisposed || !busy) return;operationStatus.Text = p.Message + $"   {p.Completed}/{p.Total}";progress.Style = ProgressBarStyle.Continuous;
+            progress.Maximum = Math.Max(1, p.Total);progress.Value = Math.Clamp(p.Completed, 0, progress.Maximum);
+        }));
+    });
+    private async Task Run(string message, Func<CancellationToken, Task> action)
+    {
+        if (busy) return;
+        busy = true;operation = new CancellationTokenSource();SetBusy();operationStatus.Text = message;progress.Style = ProgressBarStyle.Marquee;
+        try { await Task.Run(() => action(operation.Token));operationStatus.Text = "Done. " + store.CatalogMessage; }
+        catch (OperationCanceledException) { operationStatus.Text = "Cancelled. Any in-progress installation was rolled back."; }
+        catch (Exception ex)
+        {
+            operationStatus.Text = ex.Message;
+            if (!closing) MessageBox.Show(this, ex.Message, "Map operation stopped", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        finally
+        {
+            busy = false;operation.Dispose();operation = null;progress.Style = ProgressBarStyle.Continuous;progress.Value = 0;SetBusy();FillMaps();
+            if (closing) Close();
+        }
+    }
+    private void SetBusy()
+    {
+        foreach (Control c in new Control[] { search, category, statusFilter, grid, source, download, enable, disable, folder, refresh }) c.Enabled = !busy;
+        cancel.Visible = busy;
+    }
+    private void FillMaps()
+    {
+        if (busy) return;string? selected = Selected?.Id;
+        grid.Rows.Clear();var maps = (store.Catalog?.Maps ?? []).Concat(store.State.Installed.Values.Select(m => m.Entry)).Concat(store.State.Downloads.Values)
+            .DistinctBy(m => m.Id).OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase).ThenBy(m => m.Category).ToList();
+        string q = search.Text.Trim();
+        foreach (var map in maps)
+        {
+            string state = store.Status(map);
+            if (q.Length > 0 && !(map.Name + " " + map.Packages).Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+            if (category.SelectedIndex > 0 && map.Category != category.Text) continue;
+            bool matches = statusFilter.Text switch
+            {
+                "Updates available" => store.HasUpdate(map), "Enabled" => state.StartsWith("Enabled"), "Disabled" => state.StartsWith("Disabled"),
+                "Downloaded" => store.State.Downloads.ContainsKey(map.Id), "Not downloaded" => !store.State.Downloads.ContainsKey(map.Id), _ => true
+            };
+            if (!matches) continue;
+            int index = grid.Rows.Add(map.Name, map.Category, state);grid.Rows[index].Tag = map;
+            if (map.Id == selected) grid.CurrentCell = grid.Rows[index].Cells[0];
+        }
+        count.Text = $"{grid.Rows.Count} maps shown  •  {maps.Count} in the library  •  {store.State.Installed.Values.Count(m => m.Enabled)} managed and enabled";
+        catalogStatus.Text = store.CatalogMessage;NotesLoad = Detail();
+    }
+    private async Task Detail()
+    {
+        notesCancel?.Cancel();notesCancel?.Dispose();notesCancel = new CancellationTokenSource();var ct = notesCancel.Token;
+        var map = Selected;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
+        if (map == null) { mapName.Text = "Your map library";metadata.Text = "Community • Originals • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";notes.Clear();source.Enabled = false;return; }
+        mapName.Text = map.Name;metadata.Text = $"{map.Category}  /  {map.Version}\n{map.Packages}  •  {SizeText(map.Bytes)}  •  {map.Files.Count} files";
+        summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nDisabling keeps shared assets installed.";
+        source.Enabled = map.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
+        enable.Text = installed?.Enabled == true ? "Repair / enable" : "Enable map";
+        download.Text = store.HasUpdate(map) ? "Download update" : "Download map";
+        notes.Text = "Loading map notes…";
+        try { var text = await repository.NotesAsync(map, ct);if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = text; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception) { if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = "Map notes are unavailable offline. Previously downloaded maps can still be enabled.\n\n" + RepositoryClient.RepositoryUrl; }
+    }
+    private static string SizeText(long bytes) => bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024.0 * 1024 * 1024):0.0} GB" : $"{bytes / (1024.0 * 1024):0.0} MB";
+    public async Task<string> SmokeAsync()
+    {
+        category.SelectedItem = "Enhanced";if (grid.Rows.Count != 1) throw new InvalidOperationException("Enhanced filter failed.");
+        category.SelectedIndex = 0;search.Text = "Shipment";if (grid.Rows.Count != 1) throw new InvalidOperationException("Map search failed.");
+        search.Clear();foreach (DataGridViewRow row in grid.Rows) if (row.Tag is MapEntry m && m.Name == "Shipment") { grid.CurrentCell = row.Cells[0];break; }
+        await NotesLoad;
+        return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nDisable enabled: {disable.Enabled}\nFilter and search checks passed.";
+    }
+}
