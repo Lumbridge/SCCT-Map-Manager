@@ -1,114 +1,37 @@
 # SCCT Map Manager
 
-A portable Windows app for **Splinter Cell: Chaos Theory Versus**. Browse, download,
-enable, disable and update maps from [Lumbridge/SCCT-Maps](https://github.com/Lumbridge/SCCT-Maps).
+Browse, download and manage maps for **Splinter Cell: Chaos Theory Versus**, using the [SCCT Maps collection](https://github.com/Lumbridge/SCCT-Maps).
 
-## Run
+## Install
 
-Place **SCCT Map Manager.exe** in your game's `System` folder and double-click it.
-The app automatically uses the parent game installation. **Change folder** selects
-another installation. The executable includes its .NET runtime; no separate runtime
-installation, Git installation, account or administrator access is required.
+[Download the latest release](https://github.com/Lumbridge/SCCT-Map-Manager/releases/latest), extract it, and put **SCCT Map Manager.exe** in your game's `System` folder. Run it from there.
 
-Windows 10/11, x64. The map collection targets Enhanced SCCT Versus 3.6.
+Requires Windows 10/11 x64 and Enhanced SCCT Versus 3.6. To update, close the manager and replace the EXE.
 
-## Manage maps
+## Using it
 
-- **Search** by map or package name and filter by collection or status.
-- **Community** includes the original community pack and its shared supporting assets.
-- **JP's Maps** includes the newest versioned release of each original map, including Shipment, pinned above the other maps with a teal pushpin icon. Maps are alphabetical within JP's Maps and the remaining library.
-- **Enhanced** contains edited versions of existing levels.
-- **Recovered** contains recovered playable maps and optional editable sources.
-- **Download map** caches the current version without enabling it. If the map is
-  already enabled, downloading an update applies it and keeps it enabled.
-- **Enable map** installs the selected version, downloading any uncached files.
-- **Disable map** removes the playable map and its matching menu package from the
-  game's search paths. Managed editor sources are also disabled. Shared assets stay
-  installed so disabling one map does not break another.
-- **Enable map** restores a disabled version from the local cache, including an
-  existing unmanaged copy. Download an update first to switch to the repository version.
-- **Include editable source maps** is off for new installations. Enable it explicitly
-  to install `Packages/MapsEd` files. Once installed, that choice is remembered.
-- **Open backups** shows original files replaced during installs and updates.
+- Search or filter the map list. **JP's Maps** are pinned at the top.
+- **Enable map** downloads and installs a map. **Disable map** removes it from play; you can enable it again later.
+- **Download map** saves a map for later, or updates it if already enabled.
+- Check **Include editable source maps** if you want the available editor files.
+- **Change folder** switches game installations.
 
-Close the game and editor before changing installed maps. Downloads of inactive
-maps can run while the game is open. Read each map's notes for dependencies supplied
-by the base game; the manager downloads repository files, not proprietary base-game
-assets missing from your installation.
+Close the game and editor before enabling, disabling or updating installed maps. Downloaded maps can be enabled offline.
 
-## Map-loading crashes: optional Reloaded Core patch
+## DLL patch
 
-If the game crashes when loading maps installed through the manager, select
-**DLL patch / restore…** in the top toolbar, then **Use patched DLL**. Close the game
-and editor first. The verified patch is bundled in the app and works offline.
-It addresses unsafe custom-map filename copies and some missing player/profile
-data crashes; it is not a fix for every crash.
+For custom-map loading crashes, try **DLL patch / restore** in the toolbar. The optional patch backs up your current DLL; use **Restore selected backup** to switch back. It may not fix every crash.
 
-Each replacement keeps the previous DLL in a dated UTC backup under
-`System/SCCTMapManagerData/Backups/Runtime`. Choose a date and **Restore selected
-backup** to return to that version directly in the app. Restoring also backs up
-the DLL it replaces. Backups are verified before restoration and are never pruned.
-If the DLL was already missing, installation cannot create a backup of it.
+## Backups
 
-The dialog checks the actual DLL contents every two seconds and when reopened,
-so manually replacing or renaming `System/Reloaded.Core.dll` updates the status
-automatically. A different DLL is never assumed to be my patch. Renamed copies
-are left in place. The app never reapplies the patch automatically.
+Keep `System/SCCTMapManagerData` — it holds downloads, disabled maps and backups. **Open backups** opens the backup folder. Updates stop if they would overwrite your edited maps.
 
-The bundled patch is the previously prepared Reloaded v3.0a runtime with SHA-256
-`95e3f812a58d03fde82983d397183dc3fb87da85a663cafac766c8d28ace866d`.
+## Build
 
-## Existing maps and local edits
-
-Existing map files appear as **Installed outside manager**. Disabling them saves
-their actual bytes and menu packages; re-enabling restores those same bytes. This
-does not silently replace a custom build with a downloaded map.
-
-Installing a repository version over an existing file creates a backup first.
-Later updates refuse to overwrite managed files that have been edited outside the
-manager. Preserve your edited copy before updating. Shared dependencies with
-different contents cannot be replaced while another managed, enabled map owns them.
-Disable the conflicting map before switching variants that use the same package name.
-
-Disabled maps, downloaded versions and backups are stored under
-`System/SCCTMapManagerData`. Keep this folder when moving the app or installation;
-it contains the files required to restore disabled maps. The manager does not delete
-shared dependencies or automatically prune backups/cache files.
-
-The app includes a bundled catalog for browsing on first launch, even if GitHub
-is temporarily unavailable. The catalog is cached after a successful refresh. Downloaded maps work offline.
-New maps and updates are discovered from the current GitHub repository tree. All
-files for an operation come from one pinned commit and are verified against their
-Git blob hashes. Symlinks, traversal paths, executables and unsupported asset
-destinations are rejected.
-
-Installations use staged downloads, durable backups and an operation journal.
-If an operation fails, changes are rolled back. An interrupted process is recovered
-on the next launch; recovery stops if it finds additional outside edits rather than
-overwriting them. Only one manager can access an installation at a time.
-
-## Build and test
-
-Install the .NET 10 SDK on Windows, then run:
+With the .NET 10 SDK installed:
 
 ```powershell
 ./build.ps1 -Test
 ```
 
-The self-contained, single executable is written to `artifacts/publish`, with a
-SHA-256 file alongside it. Run `./build.ps1 -Test -LiveTests` to also fetch the
-public map catalog and download/install Shipment in a disposable fixture.
-
-Tests cover local-edit protection, shared ownership, case-insensitive paths,
-unmanaged map round trips, source-map opt-in, corrupt downloads, cancellation,
-locked-file rollback, recovery after interruption and persistence. Test data remains
-under `artifacts/tests` for inspection. No test targets the real game installation.
-
-For a UI smoke check against a disposable installation:
-
-```powershell
-& './artifacts/publish/SCCT Map Manager.exe' --root 'path/to/disposable/game' --ui-smoke 'path/to/screenshots'
-```
-
-The smoke check refreshes the catalog, tests search/collection filters and writes
-a screenshot and report. It does not install or disable maps.
+Output: `artifacts/publish`. Add `-LiveTests` to test downloads against a disposable installation.
