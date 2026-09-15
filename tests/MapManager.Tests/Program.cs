@@ -16,9 +16,51 @@ string Fixture(string name)
 void Put(string root, string path, string text) { var dest = SafePaths.Under(root, path);Directory.CreateDirectory(Path.GetDirectoryName(dest)!);File.WriteAllText(dest, text); }
 string Read(string root, string path) => File.ReadAllText(SafePaths.Under(root, path));
 var client = new FakeClient(output);
+var runtimeRoot = Fixture("runtime");
+Put(runtimeRoot, "System/Reloaded.Core.dll", "original runtime");
+var runtime = new RuntimePatch(runtimeRoot, () => { });
+Check(runtime.Status().StartsWith("A different DLL"), "runtime initially detects an unpatched copy");
+runtime.Install();
+Check(runtime.Status().StartsWith("Patched"), "verified bundled runtime is installed");
+var originalBackup = runtime.ListBackups().Single();
+Check(File.ReadAllText(Path.Combine(runtimeRoot, "System/SCCTMapManagerData/Backups/Runtime", originalBackup.Name)) == "original runtime", "dated runtime backup preserves original bytes");
+runtime.Install();Check(runtime.ListBackups().Count == 1, "repeated patch install does not back up itself");
+runtime.Restore(originalBackup);
+Check(Read(runtimeRoot, "System/Reloaded.Core.dll") == "original runtime", "restore dated runtime backup byte for byte");
+Check(runtime.ListBackups().Count == 2, "restore also preserves the replaced patched DLL");
+runtime.Install();Put(runtimeRoot, "System/Reloaded.Core.dll", "original runtime");
+Check(new RuntimePatch(runtimeRoot, () => { }).Status().StartsWith("Your previous DLL"), "manual native restoration detected across restart without stale state");
+File.Move(Path.Combine(runtimeRoot, "System/Reloaded.Core.dll"), Path.Combine(runtimeRoot, "System/Reloaded.Core.dll.off"));
+Check(runtime.Status().Contains("missing or renamed"), "manual runtime rename detected");
+runtime.Restore(originalBackup);Check(Read(runtimeRoot, "System/Reloaded.Core.dll") == "original runtime", "restore works when active DLL was renamed");
+Check(Read(runtimeRoot, "System/Reloaded.Core.dll.off") == "original runtime", "manually renamed DLL is preserved");
+Put(runtimeRoot, "System/Reloaded.Core.dll", "another native version");
+Check(runtime.Status().StartsWith("A different DLL"), "unknown external replacement is not claimed to be patched");
+runtime.Install();
+Check(runtime.ListBackups().Any(b => File.ReadAllText(Path.Combine(runtimeRoot, "System/SCCTMapManagerData/Backups/Runtime", b.Name)) == "another native version"), "reapply preserves externally replaced DLL");
+var corruptBackupPath = Path.Combine(runtimeRoot, "System/SCCTMapManagerData/Backups/Runtime", originalBackup.Name);
+File.WriteAllText(corruptBackupPath, "damaged");
+await Reject(() => { runtime.Restore(originalBackup);return Task.CompletedTask; }, "corrupt runtime backup rejected before changing installed DLL");
+Check(runtime.Status().StartsWith("Patched"), "corrupt restore leaves patched runtime intact");
+await Reject(() => { new RuntimePatch(runtimeRoot, () => throw new IOException("Game is open")).Restore(runtime.ListBackups().First());return Task.CompletedTask; }, "runtime changes enforce game/editor guard");
+if (OperatingSystem.IsWindows())
+{
+    Put(runtimeRoot, "System/Reloaded.Core.dll", "locked native runtime");
+    using (var locked = new FileStream(Path.Combine(runtimeRoot, "System/Reloaded.Core.dll"), FileMode.Open, FileAccess.Read, FileShare.Read))
+        await Reject(() => { runtime.Install();return Task.CompletedTask; }, "locked runtime replacement fails safely");
+    Check(Read(runtimeRoot, "System/Reloaded.Core.dll") == "locked native runtime", "locked DLL remains intact");
+}
+Check(!Directory.EnumerateFiles(Path.Combine(runtimeRoot, "System"), ".runtime-*.tmp").Any(), "runtime staging files cleaned after success and failure");
 var a = client.Map("original/A", "Alpha", "alpha-v1", "shared-v1", true);
 var b = client.Map("community/B", "Bravo", "bravo-v1", "shared-v1");
 var update = client.Map("original/A", "Alpha", "alpha-v2", "shared-v1", true);
+var jpZulu = a with { Id = "original/Z", Name = "Zulu", Category = "Originals" };
+var communityAlpha = b with { Name = "Alpha", Category = "Community" };
+var ordered = CatalogPresentation.Order(new[] { communityAlpha, jpZulu, a }).ToList();
+Check(ordered.Select(m => m.Id).SequenceEqual(new[] { a.Id, jpZulu.Id, b.Id }), "original maps stay pinned above alphabetically earlier community maps");
+Check(ordered.Take(2).All(m => m.Category == "JP's Maps") && ordered[2].Category == "Community", "cached Originals entries display as JP's Maps without changing other collections");
+Check(ordered[0].Id == a.Id && ordered[0].Fingerprint == a.Fingerprint, "collection rename preserves installed identity and content fingerprint");
+
 
 foreach (var path in new[] { "../escape", "Packages/Maps/../../escape", "Packages/Maps/C:.sdc", "Packages/Maps/CON.sdc", "Packages/Maps/name. ", "Packages\\Maps\\a.sdc", "/absolute" })
     await Reject(() => { SafePaths.ValidateRelative(path);return Task.CompletedTask; }, "reject unsafe path " + path);
@@ -146,7 +188,7 @@ if (treeArg >= 0)
         .Where(path => path.StartsWith("release/ShipD/") && path.EndsWith("/Packages/Maps/ShipD.sdc"))
         .Select(path => path.Split('/')[2]).Distinct()
         .OrderByDescending(version => Version.Parse(version.TrimStart('v').Contains('.') ? version.TrimStart('v') : version.TrimStart('v') + ".0"));
-    Check(catalog.Maps.Any(m => m.Category == "Originals" && m.Name == "Shipment" && m.Version == shipmentVersions.First()), "select the latest original Shipment release");
+    Check(catalog.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Shipment" && m.Version == shipmentVersions.First()), "select the latest original Shipment release");
     Check(catalog.Maps.Any(m => m.Category == "Enhanced") && catalog.Maps.Count(m => m.Category == "Recovered") == 4, "include enhanced and recovered collections");
     Check(catalog.Maps.Where(m => m.Category == "Community").All(m => m.Files.Any(f => f.Source.StartsWith("community/_shared/"))), "bundle shared community dependencies with each map");
     Check(catalog.Maps.All(m => m.Files.All(f => !f.Source.Contains("/src/") && !f.Source.EndsWith(".exe"))), "catalog excludes source artwork and executables");

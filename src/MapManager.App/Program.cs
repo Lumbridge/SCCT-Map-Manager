@@ -28,12 +28,18 @@ internal static class Program
                 form.Shown += async (_, _) =>
                 {
                     await form.InitialLoad;
-                    var checks = await form.SmokeAsync();
+                    var checks = await form.SmokeAsync(artifact);
                     if (artifact != null)
                     {
                         Directory.CreateDirectory(artifact);
                         using var bitmap = new Bitmap(form.Width, form.Height);form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
                         bitmap.Save(Path.Combine(artifact, "map-manager.png"));
+                        using var runtimeDialog = new RuntimePatchDialog(root);
+                        runtimeDialog.Show(form);
+                        using var runtimeBitmap = new Bitmap(runtimeDialog.Width, runtimeDialog.Height);
+                        runtimeDialog.DrawToBitmap(runtimeBitmap, new Rectangle(Point.Empty, runtimeDialog.Size));
+                        runtimeBitmap.Save(Path.Combine(artifact, "runtime-patch.png"));
+                        runtimeDialog.Close();
                         File.WriteAllText(Path.Combine(artifact, "ui-smoke.txt"), $"Map rows: {form.VisibleMapCount}\n{form.CatalogStatus}\n{checks}");
                     }
                     form.Close();

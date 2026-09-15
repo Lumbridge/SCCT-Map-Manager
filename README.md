@@ -16,7 +16,7 @@ Windows 10/11, x64. The map collection targets Enhanced SCCT Versus 3.6.
 
 - **Search** by map or package name and filter by collection or status.
 - **Community** includes the original community pack and its shared supporting assets.
-- **Originals** selects the newest versioned release of each original map, including Shipment.
+- **JP's Maps** includes the newest versioned release of each original map, including Shipment, pinned above the other maps with a teal pushpin icon. Maps are alphabetical within JP's Maps and the remaining library.
 - **Enhanced** contains edited versions of existing levels.
 - **Recovered** contains recovered playable maps and optional editable sources.
 - **Download map** caches the current version without enabling it. If the map is
@@ -35,6 +35,28 @@ Close the game and editor before changing installed maps. Downloads of inactive
 maps can run while the game is open. Read each map's notes for dependencies supplied
 by the base game; the manager downloads repository files, not proprietary base-game
 assets missing from your installation.
+
+## Map-loading crashes: optional Reloaded Core patch
+
+If the game crashes when loading maps installed through the manager, select
+**DLL patch / restore…** in the top toolbar, then **Use patched DLL**. Close the game
+and editor first. The verified patch is bundled in the app and works offline.
+It addresses unsafe custom-map filename copies and some missing player/profile
+data crashes; it is not a fix for every crash.
+
+Each replacement keeps the previous DLL in a dated UTC backup under
+`System/SCCTMapManagerData/Backups/Runtime`. Choose a date and **Restore selected
+backup** to return to that version directly in the app. Restoring also backs up
+the DLL it replaces. Backups are verified before restoration and are never pruned.
+If the DLL was already missing, installation cannot create a backup of it.
+
+The dialog checks the actual DLL contents every two seconds and when reopened,
+so manually replacing or renaming `System/Reloaded.Core.dll` updates the status
+automatically. A different DLL is never assumed to be my patch. Renamed copies
+are left in place. The app never reapplies the patch automatically.
+
+The bundled patch is the previously prepared Reloaded v3.0a runtime with SHA-256
+`95e3f812a58d03fde82983d397183dc3fb87da85a663cafac766c8d28ace866d`.
 
 ## Existing maps and local edits
 

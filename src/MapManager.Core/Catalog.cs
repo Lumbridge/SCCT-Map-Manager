@@ -23,6 +23,17 @@ public record MapEntry(string Id, string Name, string Category, string Version, 
 public record Catalog(string Commit, DateTimeOffset CheckedAt, List<MapEntry> Maps);
 public record TransferProgress(string Message, int Completed, int Total, long Bytes = 0);
 
+public static class CatalogPresentation
+{
+    public const string JpMaps = "JP's Maps";
+    public static bool IsJpMap(MapEntry map) => map.Id.StartsWith("original/", StringComparison.Ordinal);
+    public static IEnumerable<MapEntry> Order(IEnumerable<MapEntry> maps) => maps
+        .Select(m => IsJpMap(m) ? m with { Category = JpMaps } : m)
+        .OrderByDescending(IsJpMap)
+        .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(m => m.Category, StringComparer.OrdinalIgnoreCase);
+}
+
 public static class CatalogParser
 {
     private sealed record Blob(string Path, string Hash, long Size);
@@ -41,7 +52,7 @@ public static class CatalogParser
             var parts = b.Path.Split('/');
             if (parts.Length < 5 || !b.Path.EndsWith(".sdc", StringComparison.OrdinalIgnoreCase)) continue;
             if (parts[0] == "release" && parts.Length == 6 && parts[3] == "Packages" && parts[4] == "Maps")
-                roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", parts[1] == "ShipD" ? "Shipment" : parts[1], "Originals", parts[2]);
+                roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", parts[1] == "ShipD" ? "Shipment" : parts[1], "JP's Maps", parts[2]);
             else if (parts.Length == 5 && parts[2] == "Packages" && parts[3] == "Maps" && parts[1] != "_shared")
             {
                 string? category = parts[0] switch { "community" => "Community", "enhanced" => "Enhanced", "recovered" => "Recovered", _ => null };
@@ -76,7 +87,7 @@ public static class CatalogParser
             maps.Add(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()));
         }
         if (maps.Count == 0) throw new InvalidDataException("The repository contains no supported maps.");
-        return new Catalog(commit, DateTimeOffset.UtcNow, maps.OrderBy(m => m.Name, StringComparer.OrdinalIgnoreCase).ThenBy(m => m.Category).ToList());
+        return new Catalog(commit, DateTimeOffset.UtcNow, CatalogPresentation.Order(maps).ToList());
     }
     private static string VersionKey(string value) => Regex.Replace(value.TrimStart('v', 'V'), @"\d+", m => m.Value.PadLeft(10, '0'));
     public static void ValidateHash(string hash)
