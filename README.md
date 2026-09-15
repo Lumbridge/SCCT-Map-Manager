@@ -10,7 +10,7 @@ Requires Windows 10/11 x64 and Enhanced SCCT Versus 3.6. To update, close the ma
 
 ## Using it
 
-- Search or filter the map list. **JP's Maps** are pinned at the top.
+- Search or filter the map list.
 - **Enable map** downloads and installs a map. **Disable map** removes it from play; you can enable it again later.
 - **Download map** saves a map for later, or updates it if already enabled.
 - Check **Include editable source maps** if you want the available editor files.
@@ -24,7 +24,7 @@ For custom-map loading crashes, try **DLL patch / restore** in the toolbar. The 
 
 ## Backups
 
-Keep `System/SCCTMapManagerData` — it holds downloads, disabled maps and backups. **Open backups** opens the backup folder. Updates stop if they would overwrite your edited maps.
+Keep `System/SCCTMapManagerData` - it holds downloads, disabled maps and backups. **Open backups** opens the backup folder. Updates stop if they would overwrite your edited maps.
 
 ## Build
 
