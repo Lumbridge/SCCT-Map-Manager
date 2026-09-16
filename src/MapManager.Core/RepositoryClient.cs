@@ -25,7 +25,15 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
             throw new IOException("GitHub's request limit was reached. Your downloaded maps still work offline; refresh again later.");
         response.EnsureSuccessStatusCode();
-        return CatalogParser.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+        var catalog = CatalogParser.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+        using var assets = await http.GetAsync($"https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/{catalog.Commit}/asset-catalog.json", timeout.Token);
+        if (assets.StatusCode != HttpStatusCode.NotFound)
+        {
+            assets.EnsureSuccessStatusCode();
+            var packs = AssetCatalog.Parse(await assets.Content.ReadAsStringAsync(timeout.Token), catalog.Commit);
+            catalog = catalog with { AssetPacks = packs.Concat(catalog.AssetPacks).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList() };
+        }
+        return catalog;
         }
         catch (OperationCanceledException) when (!cancel.IsCancellationRequested) { throw new IOException("The catalog server timed out. The saved or bundled catalog is still available."); }
     }
@@ -36,7 +44,9 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
     }
     public async Task DownloadAsync(MapEntry map, MapFile file, string destination, CancellationToken cancel)
     {
-        using var response = await http.GetAsync(Raw(map, file.Source), HttpCompletionOption.ResponseHeadersRead, cancel);
+        var url = map.IsAssetPack && file.Source.StartsWith("releases/download/", StringComparison.Ordinal)
+            ? ReleaseAsset(file.Source) : Raw(map, file.Source);
+        using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancel);
         response.EnsureSuccessStatusCode();
         await using var input = await response.Content.ReadAsStreamAsync(cancel);
         await using var output = new FileStream(destination, FileMode.CreateNew, FileAccess.Write, FileShare.None, 131072, true);
@@ -50,11 +60,19 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         }
         if (length != file.Size) throw new InvalidDataException("The map download was incomplete.");
     }
+    private static string ReleaseAsset(string path)
+    {
+        SafePaths.ValidateRelative(path);
+        if (path.Split('/').Length != 4) throw new InvalidDataException("Invalid release asset path.");
+        return RepositoryUrl + "/" + string.Join('/', path.Split('/').Select(Uri.EscapeDataString));
+    }
     public async Task<string> NotesAsync(MapEntry map, CancellationToken cancel)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);timeout.CancelAfter(TimeSpan.FromSeconds(12));
         using var response = await http.GetAsync(Raw(map, map.NotesPath), timeout.Token);
-        if (response.StatusCode == HttpStatusCode.NotFound) return "No extra notes were supplied. Install into Enhanced SCCT Versus 3.6 and keep the included assets together.";
+        if (response.StatusCode == HttpStatusCode.NotFound) return map.IsAssetPack
+            ? "No release notes were supplied. Keep all files in this pack together when using them in the editor."
+            : "No extra notes were supplied. Install into Enhanced SCCT Versus 3.6 and keep the included assets together.";
         response.EnsureSuccessStatusCode();return await response.Content.ReadAsStringAsync(timeout.Token);
     }
     public void Dispose() => http.Dispose();

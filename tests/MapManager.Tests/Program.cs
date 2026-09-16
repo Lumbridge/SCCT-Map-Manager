@@ -178,6 +178,57 @@ using (var store = new MapStore(offlineRoot, client))
 }
 
 var treeArg = Array.IndexOf(args, "--tree");
+var assetBase = client.Map("assets/Rainbow Six Vegas", "Rainbow Six Vegas", "unused", "asset-v1");
+var asset = assetBase with { Version = "v1.0.0", Category = "Editor assets", Files = assetBase.Files.Where(f => f.Destination == "Packages/Textures/Shared.utx").ToList() };
+var assetNewBase = client.Map(asset.Id, asset.Name, "unused", "asset-v2");
+var assetUpdate = asset with { Version = "v1.1.0", Files = assetNewBase.Files.Where(f => f.Destination == "Packages/Textures/Shared.utx").ToList() };
+var assetRoot = Fixture("asset-lifecycle");
+using (var store = new MapStore(assetRoot, client))
+{
+    await store.DownloadAsync(asset, false, null, default);
+    Check(!File.Exists(Path.Combine(assetRoot, "Packages/Textures/Shared.utx")), "asset download for later does not install");
+    client.Offline = true;await store.EnableAsync(asset, false, null, default);client.Offline = false;
+    Check(store.Status(asset) == "Installed" && !store.CanDisable(asset), "asset packs install offline and cannot be disabled like maps");
+    await Reject(() => store.DisableAsync(asset, default), "shared editor assets cannot be removed through map disable");
+    Check(store.HasUpdate(assetUpdate) && store.Status(assetUpdate).Contains("update available"), "asset updates are detected");
+    Check(store.HasUpdate(asset with { Version = "v1.0.1" }), "version-only releases are detected");
+    await store.DownloadAsync(assetUpdate, false, null, default);
+    Check(store.State.Installed[asset.Id].Entry.Version == "v1.1.0" && Read(assetRoot, "Packages/Textures/Shared.utx") == "asset-v2", "asset update persists version and updates active files");
+    Check(Directory.GetFiles(Path.Combine(store.DataRoot, "Backups"), "*.utx", SearchOption.AllDirectories).Any(f => File.ReadAllText(f) == "asset-v1"), "asset updates back up previous files");
+    File.Delete(Path.Combine(assetRoot, "Packages/Textures/Shared.utx"));
+    Check(store.Status(assetUpdate) == "Files missing", "asset status detects missing texture files");
+    await store.EnableAsync(assetUpdate, false, null, default);
+    Put(assetRoot, "Packages/Textures/Shared.utx", "editor changes");
+    await Reject(() => store.EnableAsync(asset, false, null, default), "asset update preserves local editor changes");
+    Check(Read(assetRoot, "Packages/Textures/Shared.utx") == "editor changes", "editor changes stay intact");
+}
+using (var store = new MapStore(assetRoot, client))
+    Check(store.State.Installed[asset.Id].Entry.Version == "v1.1.0", "installed asset version survives restart");
+var assetConflictRoot = Fixture("asset-conflicts");
+using (var store = new MapStore(assetConflictRoot, client))
+{
+    Put(assetConflictRoot, "Packages/Textures/Shared.utx", "unmanaged edit");
+    await Reject(() => store.EnableAsync(asset, false, null, default), "asset install refuses to overwrite an unmanaged editor package");
+    Check(Read(assetConflictRoot, "Packages/Textures/Shared.utx") == "unmanaged edit", "unmanaged package remains intact");
+    File.Delete(Path.Combine(assetConflictRoot, "Packages/Textures/Shared.utx"));
+    await store.EnableAsync(asset, false, null, default);
+    var matchingMap = client.Map("community/AssetUser", "AssetUser", "map", "asset-v1");
+    await store.EnableAsync(matchingMap, false, null, default);
+    await Reject(() => store.EnableAsync(assetUpdate, false, null, default), "asset update cannot replace an enabled map dependency");
+    await store.DisableAsync(matchingMap, default);
+    Check(Read(assetConflictRoot, "Packages/Textures/Shared.utx") == "asset-v1", "disabling maps keeps installed editor assets");
+}
+var releaseAsset = asset with { NotesPath = asset.Id + "/v1.0.0/README.md", Files = asset.Files.Select(f => f with { Source = "releases/download/r6v-v1.0.0/Shared.utx" }).ToList() };
+var manifest = JsonSerializer.Serialize(new[] { releaseAsset, releaseAsset with { Version = "v1.10.0", NotesPath = asset.Id + "/v1.10.0/README.md", Files = releaseAsset.Files.Select(f => f with { Source = "releases/download/r6v-v1.10.0/Shared.utx" }).ToList() } });
+Check(AssetCatalog.Parse(manifest, a.Commit).Single().Version == "v1.10.0", "release catalog chooses newest semantic version");
+await Reject(() => { AssetCatalog.Parse(JsonSerializer.Serialize(new[] { releaseAsset with { Files = [releaseAsset.Files[0] with { Destination = "System/hack.exe" }] } }), a.Commit);return Task.CompletedTask; }, "release catalog rejects executable destinations");
+var seedPath = Path.Combine("src", "MapManager.App", "catalog-seed.json");
+var seed = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(seedPath))!;
+foreach (var version in new[] { "v1.9.0", "v1.10.0" })
+    seed["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = $"assets/Rainbow Six Vegas/{version}/Packages/StaticMeshes/R6V.usx", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 });
+var assetCatalog = CatalogParser.Parse(seed.ToJsonString());
+Check(assetCatalog.AssetPacks.Single().Version == "v1.10.0" && assetCatalog.Maps.All(m => !m.IsAssetPack), "tree catalog versions editor packs separately from maps");
+Check(JsonSerializer.Deserialize<Catalog>("{\"Commit\":\"old\",\"CheckedAt\":\"2026-01-01T00:00:00Z\",\"Maps\":[]}")!.AssetPacks.Count == 0, "old saved catalogs load with an empty asset library");
 if (treeArg >= 0)
 {
     var catalog = CatalogParser.Parse(await File.ReadAllTextAsync(args[treeArg + 1]));
@@ -205,7 +256,36 @@ if (treeArg >= 0)
         File.WriteAllText(Path.Combine(output, "live-root.txt"), liveRoot);
     }
 }
+var draftArg = Array.IndexOf(args, "--asset-draft");
+if (draftArg >= 0)
+{
+    var draftRoot = Path.GetFullPath(args[draftArg + 1]);
+    var entries = AssetCatalog.Parse(File.ReadAllText(Path.Combine(draftRoot, "repository-files", "asset-catalog.json")), a.Commit);
+    var draftClient = new DraftClient(draftRoot);
+    var installRoot = Fixture("staged-asset-install");
+    using var store = new MapStore(installRoot, draftClient);
+    foreach (var pack in entries)
+    {
+        foreach (var file in pack.Files)
+        {
+            var path = draftClient.Source(file);
+            Check(new FileInfo(path).Length == file.Size && Hashing.GitBlob(path) == file.Hash, "staged package matches manifest: " + file.Destination);
+        }
+        await store.EnableAsync(pack, false, null, default);
+        Check(pack.Files.All(f => Hashing.GitBlob(SafePaths.Under(installRoot, f.Destination)) == f.Hash), "staged pack installs and verifies in a disposable installation: " + pack.Name);
+    }
+    Check(store.State.Installed.Count == entries.Count, "all staged pack versions recorded independently");
+}
 Console.WriteLine($"PASS {assertions} checks. Fixtures: {output}");
+
+sealed class DraftClient(string root) : IRepositoryClient
+{
+    public string Source(MapFile file) => SafePaths.Under(root, "release-files/" + string.Join('/', file.Source.Split('/').Skip(2)));
+    public Task<Catalog> FetchCatalogAsync(CancellationToken cancel) => throw new NotSupportedException();
+    public Task<string> NotesAsync(MapEntry map, CancellationToken cancel) => Task.FromResult("Draft pack");
+    public Task DownloadAsync(MapEntry map, MapFile file, string destination, CancellationToken cancel)
+    { cancel.ThrowIfCancellationRequested();File.Copy(Source(file), destination);return Task.CompletedTask; }
+}
 
 sealed class FakeClient(string output) : IRepositoryClient
 {

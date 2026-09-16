@@ -41,8 +41,14 @@ public sealed class MainForm : Form
         this.repository = repository;store = new MapStore(root, repository, () => Program.GuardGame(root));
         SeedCatalog();
         Text = "SCCT Map Manager";Font = new Font("Segoe UI", 10);ForeColor = Ink;BackColor = Pale;
-        AutoScaleDimensions = new SizeF(96, 96);AutoScaleMode = AutoScaleMode.Dpi;MinimumSize = new Size(1050, 740);Size = new Size(1280, 900);StartPosition = FormStartPosition.CenterScreen;
+        AutoScaleDimensions = new SizeF(96, 96);AutoScaleMode = AutoScaleMode.Dpi;MinimumSize = new Size(1050, 800);Size = new Size(1280, 900);StartPosition = FormStartPosition.CenterScreen;
         BuildLayout();WireEvents();
+        var toolsMenu = new MenuStrip();
+        var tools = new ToolStripMenuItem("Tools");
+        var assets = new ToolStripMenuItem("Textures & static meshes…");
+        assets.Click += (_, _) => { using var dialog = new AssetLibraryDialog(store, repository);dialog.ShowDialog(this);FillMaps(); };
+        tools.DropDownOpening += (_, _) => assets.Enabled = !busy;
+        tools.DropDownItems.Add(assets);toolsMenu.Items.Add(tools);Controls.Add(toolsMenu);MainMenuStrip = toolsMenu;
         target.Text = store.GameRoot;FillMaps();
         Shown += async (_, _) => { try { await Run("Checking the map catalog…", ct => store.RefreshAsync(ct)); } finally { initial.TrySetResult(); } };
     }
@@ -193,7 +199,7 @@ public sealed class MainForm : Form
     {
         if (busy) return;string? selected = Selected?.Id;
         grid.Rows.Clear();var maps = CatalogPresentation.Order((store.Catalog?.Maps ?? []).Concat(store.State.Installed.Values.Select(m => m.Entry)).Concat(store.State.Downloads.Values)
-            .DistinctBy(m => m.Id)).ToList();
+            .Where(m => !m.IsAssetPack).DistinctBy(m => m.Id)).ToList();
         string q = search.Text.Trim();
         foreach (var map in maps)
         {
@@ -214,7 +220,7 @@ public sealed class MainForm : Form
             }
             if (map.Id == selected) grid.CurrentCell = grid.Rows[index].Cells[0];
         }
-        count.Text = $"{grid.Rows.Count} maps shown  •  {maps.Count} in the library  •  {store.State.Installed.Values.Count(m => m.Enabled)} managed and enabled";
+        count.Text = $"{grid.Rows.Count} maps shown  •  {maps.Count} in the library  •  {store.State.Installed.Values.Count(m => m.Enabled && !m.Entry.IsAssetPack)} managed and enabled";
         catalogStatus.Text = store.CatalogMessage;NotesLoad = Detail();
     }
     private void PaintPinnedMap(object? sender, DataGridViewCellPaintingEventArgs e)
@@ -265,6 +271,17 @@ public sealed class MainForm : Form
         if (artifact != null)
         {
             Directory.CreateDirectory(artifact);
+            var assetRoot = Path.Combine(artifact, "asset-ui-fixture");
+            Directory.CreateDirectory(Path.Combine(assetRoot, "System"));Directory.CreateDirectory(Path.Combine(assetRoot, "Packages"));
+            File.WriteAllText(Path.Combine(assetRoot, "System", "SCCT_Versus.exe"), "disposable UI fixture");
+            var assetRepository = new AssetSmokeRepository();
+            using (var assetStore = new MapStore(assetRoot, assetRepository))
+            {
+                assetStore.UseFallbackCatalog(await assetRepository.FetchCatalogAsync(default));
+                var pack = assetStore.Catalog!.AssetPacks[0];
+                assetStore.State.Installed[pack.Id] = new InstalledMap { Entry = pack with { Version = "v1.0.0" }, Enabled = true };
+                using var assets = new AssetLibraryDialog(assetStore, assetRepository);assets.Show(this);await assets.SmokeAsync(artifact);assets.Close();
+            }
             var originalSize = Size;var originalStatus = operationStatus.Text;
             try
             {
@@ -276,6 +293,18 @@ public sealed class MainForm : Form
             finally { busy = false;SetBusy();Size = originalSize;operationStatus.Text = originalStatus;NotesLoad = Detail(); }
         }
         await NotesLoad;
-        return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nDisable enabled: {disable.Enabled}\nFilter and search checks passed.";
+        return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nDisable enabled: {disable.Enabled}\nMap and asset filter, search and version checks passed.";
+    }
+    private sealed class AssetSmokeRepository : IRepositoryClient
+    {
+        public Task<Catalog> FetchCatalogAsync(CancellationToken cancel)
+        {
+            var hash = new string('a', 40);
+            return Task.FromResult(new Catalog(hash, DateTimeOffset.UtcNow, []) { AssetPacks = [
+                new MapEntry("assets/Rainbow Six Vegas", "Rainbow Six Vegas — Casino", "Editor assets", "v1.1.0", hash, "README.md", [new MapFile("R6V.usx", "Packages/StaticMeshes/R6V.usx", hash, 96915499)]),
+                new MapEntry("assets/Calypso textures", "Calypso textures", "Editor assets", "v1.0.0", hash, "README.md", [new MapFile("Calypso.utx", "Packages/Textures/Calypso.utx", hash, 5401739)])] });
+        }
+        public Task DownloadAsync(MapEntry map, MapFile file, string destination, CancellationToken cancel) => throw new InvalidOperationException("UI fixture does not download files.");
+        public Task<string> NotesAsync(MapEntry map, CancellationToken cancel) => Task.FromResult("Sample release notes for the disposable UI check.\n\nTextures and meshes stay installed so maps can continue to use them.");
     }
 }

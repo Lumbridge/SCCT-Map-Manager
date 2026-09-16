@@ -82,18 +82,19 @@ public sealed class MapStore : IDisposable
     {
         if (State.Installed.TryGetValue(map.Id, out var installed))
         {
-            if (installed.Enabled && installed.Files.Keys.Where(installed.Entry.IsActivationFile).Any(p => !File.Exists(SafePaths.Under(GameRoot, p)))) return "Files missing";
+            if (installed.Enabled && installed.Files.Keys.Where(p => map.IsAssetPack || installed.Entry.IsActivationFile(p)).Any(p => !File.Exists(SafePaths.Under(GameRoot, p)))) return "Files missing";
             if (!installed.Enabled && installed.Files.Keys.Where(installed.Entry.IsActivationFile).Any(p => File.Exists(SafePaths.Under(GameRoot, p)))) return "Disabled • other files present";
             if (installed.External) return installed.Enabled ? "Enabled • existing copy" : "Disabled • existing copy";
             if (!installed.Enabled && State.Downloads.TryGetValue(map.Id, out var ready) && ready.Fingerprint != installed.Entry.Fingerprint) return "Disabled • update ready";
-            return (installed.Enabled ? "Enabled" : "Disabled") + (installed.Entry.Fingerprint != map.Fingerprint ? " • update available" : "");
+            return (installed.Enabled ? (map.IsAssetPack ? "Installed" : "Enabled") : "Disabled") + (DifferentVersion(installed.Entry, map) ? " • update available" : "");
         }
-        if (State.Downloads.TryGetValue(map.Id, out var cached)) return cached.Fingerprint == map.Fingerprint ? "Downloaded" : "Downloaded • update available";
+        if (State.Downloads.TryGetValue(map.Id, out var cached)) return !DifferentVersion(cached, map) ? "Downloaded" : "Downloaded • update available";
         if (map.Files.Any(f => f.Destination.StartsWith("Packages/Maps/", StringComparison.OrdinalIgnoreCase) && File.Exists(SafePaths.Under(GameRoot, f.Destination)))) return "Installed outside manager";
         return "Not downloaded";
     }
-    public bool CanDisable(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) ? m.Enabled : map.Files.Any(f => f.Destination.StartsWith("Packages/Maps/") && File.Exists(SafePaths.Under(GameRoot, f.Destination)));
-    public bool HasUpdate(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) ? m.Entry.Fingerprint != map.Fingerprint : State.Downloads.TryGetValue(map.Id, out var d) && d.Fingerprint != map.Fingerprint;
+    public bool CanDisable(MapEntry map) => !map.IsAssetPack && (State.Installed.TryGetValue(map.Id, out var m) ? m.Enabled : map.Files.Any(f => f.Destination.StartsWith("Packages/Maps/") && File.Exists(SafePaths.Under(GameRoot, f.Destination))));
+    private static bool DifferentVersion(MapEntry saved, MapEntry available) => saved.Fingerprint != available.Fingerprint || (available.IsAssetPack && saved.Version != available.Version);
+    public bool HasUpdate(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) ? DifferentVersion(m.Entry, map) : State.Downloads.TryGetValue(map.Id, out var d) && DifferentVersion(d, map);
     public async Task DownloadAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel)
     {
         await operations.WaitAsync(cancel);
@@ -163,8 +164,11 @@ public sealed class MapStore : IDisposable
         foreach (var file in desired)
         {
             if (!SafePaths.IsMapAsset(file.Destination)) throw new InvalidDataException("Unsupported map asset.");
+            if (map.IsAssetPack && !SafePaths.IsEditorAsset(file.Destination)) throw new InvalidDataException("Unsupported editor asset.");
             var dest = SafePaths.Under(GameRoot, file.Destination);
             var current = File.Exists(dest) ? Hashing.GitBlob(dest) : null;
+            if (map.IsAssetPack && current != null && current != file.Hash && (old == null || !old.Files.ContainsKey(file.Destination)))
+                throw new IOException("An existing file differs at " + file.Destination + ". Preserve it elsewhere before installing this asset pack.");
             foreach (var other in State.Installed.Where(p => p.Key != map.Id && p.Value.Enabled))
                 if (other.Value.Files.TryGetValue(file.Destination, out var hash) && (hash != file.Hash || map.IsActivationFile(file.Destination)))
                     throw new IOException($"{other.Value.Entry.Name} ({other.Value.Entry.Category}) uses {file.Destination}. Disable that map before switching versions.");
@@ -187,6 +191,7 @@ public sealed class MapStore : IDisposable
     }
     public async Task DisableAsync(MapEntry map, CancellationToken cancel)
     {
+        if (map.IsAssetPack) throw new InvalidOperationException("Editor assets stay installed because maps may depend on them.");
         await operations.WaitAsync(cancel);
         try
         {

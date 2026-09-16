@@ -8,6 +8,7 @@ namespace MapManager.Core;
 public record MapFile(string Source, string Destination, string Hash, long Size);
 public record MapEntry(string Id, string Name, string Category, string Version, string Commit, string NotesPath, List<MapFile> Files)
 {
+    public bool IsAssetPack => Id.StartsWith("assets/", StringComparison.Ordinal);
     public string Fingerprint => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n',
         Files.OrderBy(f => f.Destination, StringComparer.OrdinalIgnoreCase).Select(f => f.Destination.ToLowerInvariant() + ":" + f.Hash)))));
     public long Bytes => Files.Sum(f => f.Size);
@@ -20,7 +21,10 @@ public record MapEntry(string Id, string Name, string Category, string Version, 
             f.Destination.StartsWith("Packages/Maps/", StringComparison.OrdinalIgnoreCase) &&
             Path.GetFileName(path).Equals(Path.GetFileNameWithoutExtension(f.Destination) + "-i.utc", StringComparison.OrdinalIgnoreCase)));
 }
-public record Catalog(string Commit, DateTimeOffset CheckedAt, List<MapEntry> Maps);
+public record Catalog(string Commit, DateTimeOffset CheckedAt, List<MapEntry> Maps)
+{
+    public List<MapEntry> AssetPacks { get; init; } = [];
+}
 public record TransferProgress(string Message, int Completed, int Total, long Bytes = 0);
 
 public static class CatalogPresentation
@@ -87,7 +91,31 @@ public static class CatalogParser
             maps.Add(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()));
         }
         if (maps.Count == 0) throw new InvalidDataException("The repository contains no supported maps.");
-        return new Catalog(commit, DateTimeOffset.UtcNow, CatalogPresentation.Order(maps).ToList());
+        var packs = new List<MapEntry>();
+        foreach (var pack in blobs.Where(b => b.Path.StartsWith("assets/", StringComparison.Ordinal) && b.Path.Split('/').Length >= 4
+                && Regex.IsMatch(b.Path.Split('/')[2], @"^v\d+\.\d+\.\d+$"))
+            .GroupBy(b => b.Path.Split('/').ElementAtOrDefault(1)))
+        {
+            var group = pack.GroupBy(b => b.Path.Split('/')[2]).OrderByDescending(g => Version.Parse(g.Key[1..])).First();
+            var prefix = "assets/" + pack.Key + "/" + group.Key;
+            var files = new Dictionary<string, MapFile>(StringComparer.OrdinalIgnoreCase);
+            foreach (var blob in group)
+            {
+                if (!blob.Path.StartsWith(prefix + "/", StringComparison.Ordinal)) continue;
+                var destination = blob.Path[(prefix.Length + 1)..];
+                if (!SafePaths.IsEditorAsset(destination)) continue;
+                SafePaths.ValidateRelative(blob.Path);ValidateHash(blob.Hash);
+                if (blob.Size < 0 || blob.Size > 2L * 1024 * 1024 * 1024) throw new InvalidDataException("Unsupported asset file size.");
+                if (!files.TryAdd(destination, new MapFile(blob.Path, destination, blob.Hash, blob.Size)))
+                    throw new InvalidDataException("Duplicate asset destination: " + destination);
+            }
+            if (files.Count == 0) continue;
+            var notes = group.FirstOrDefault(b => b.Path.Equals(prefix + "/README.md", StringComparison.OrdinalIgnoreCase)
+                || b.Path.Equals(prefix + "/README.txt", StringComparison.OrdinalIgnoreCase))?.Path ?? prefix + "/README.md";
+            packs.Add(new MapEntry("assets/" + pack.Key, pack.Key!, "Editor assets", group.Key, commit, notes, files.Values.ToList()));
+        }
+        return new Catalog(commit, DateTimeOffset.UtcNow, CatalogPresentation.Order(maps).ToList())
+        { AssetPacks = packs.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList() };
     }
     private static string VersionKey(string value) => Regex.Replace(value.TrimStart('v', 'V'), @"\d+", m => m.Value.PadLeft(10, '0'));
     public static void ValidateHash(string hash)
@@ -98,6 +126,8 @@ public static class CatalogParser
 
 public static class SafePaths
 {
+    public static bool IsEditorAsset(string path) => IsMapAsset(path) &&
+        (path.StartsWith("Packages/Textures/", StringComparison.Ordinal) || path.StartsWith("Packages/StaticMeshes/", StringComparison.Ordinal));
     public static void ValidateRelative(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || path.Contains('\\') || Path.IsPathRooted(path)) throw new InvalidDataException("Unsafe map path.");
