@@ -233,7 +233,7 @@ var portTree = new System.Text.Json.Nodes.JsonObject { ["sha"] = a.Commit, ["tru
     new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/MapsEd/CalyD.sdc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 456 },
     new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/Textures/CalyD-i.utc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 7 }) };
 var portCatalog = CatalogParser.Parse(portTree.ToJsonString());
-Check(portCatalog.Maps.Single().Id == "ports/rainbow-six-vegas" && portCatalog.Maps.Single().Name == "CalyD"
+Check(portCatalog.Maps.Single().Id == "ports/rainbow-six-vegas" && portCatalog.Maps.Single().Name == "Calypso Casino"
     && portCatalog.Maps.Single().Category == "Ports" && portCatalog.Maps.Single().Game == "Rainbow Six Vegas"
     && portCatalog.Maps.Single().IsPort, "catalog discovers port maps and records their source game");
 var portManifest = JsonSerializer.Serialize(new[] { portCatalog.Maps.Single() with {
