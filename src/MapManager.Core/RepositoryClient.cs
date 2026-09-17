@@ -31,7 +31,9 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         {
             assets.EnsureSuccessStatusCode();
             var packs = AssetCatalog.Parse(await assets.Content.ReadAsStringAsync(timeout.Token), catalog.Commit);
-            catalog = catalog with { AssetPacks = packs.Concat(catalog.AssetPacks).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList() };
+            catalog = catalog with {
+                Maps = CatalogPresentation.Order(catalog.Maps.Concat(packs.Where(p => p.IsPort))).ToList(),
+                AssetPacks = packs.Where(p => p.IsAssetPack).Concat(catalog.AssetPacks).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList() };
         }
         return catalog;
         }
