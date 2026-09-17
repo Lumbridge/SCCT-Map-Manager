@@ -82,7 +82,7 @@ public sealed class MainForm : Form
         header.Controls.Add(target, 0, 1);header.Controls.Add(backups, 1, 1);header.Controls.Add(runtime, 2, 1);header.SetColumnSpan(runtime, 2);outer.Controls.Add(header, 0, 0);
         var filters = Table(3, 54, 23, 23);filters.AutoSize = false;filters.Padding = new Padding(0, 6, 0, 12);
         filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        category.Items.AddRange(["All collections", CatalogPresentation.JpMaps, "Community", "Enhanced", "Recovered"]);category.SelectedIndex = 0;
+        category.Items.AddRange(["All collections", CatalogPresentation.JpMaps, "Community", "Enhanced", "Recovered", "Ports"]);category.SelectedIndex = 0;
         statusFilter.Items.AddRange(["All maps", "Enabled", "Disabled", "Updates available", "Downloaded", "Not downloaded"]);statusFilter.SelectedIndex = 0;
         filters.Controls.Add(new Label { Text = "Search maps", AutoSize = true }, 0, 0);filters.Controls.Add(new Label { Text = "Collection", AutoSize = true }, 1, 0);filters.Controls.Add(new Label { Text = "Show", AutoSize = true }, 2, 0);
         filters.Controls.Add(search, 0, 1);filters.Controls.Add(category, 1, 1);filters.Controls.Add(statusFilter, 2, 1);outer.Controls.Add(filters, 0, 1);
@@ -246,7 +246,7 @@ public sealed class MainForm : Form
         notesCancel?.Cancel();notesCancel?.Dispose();notesCancel = new CancellationTokenSource();var ct = notesCancel.Token;
         var map = Selected;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
         if (map == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";notes.Clear();source.Enabled = false;return; }
-        mapName.Text = map.Name;metadata.Text = $"{map.Category}  /  {map.Version}\n{map.Packages}  •  {SizeText(map.Bytes)}  •  {map.Files.Count} files";
+        mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {map.Version}\n{map.Packages}  •  {SizeText(map.Bytes)}  •  {map.Files.Count} files";
         summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nDisabling keeps shared assets installed.";
         source.Enabled = map.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
         enable.Text = installed?.Enabled == true ? "Repair / enable" : "Enable map";

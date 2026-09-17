@@ -24,6 +24,8 @@ Open **Tools → Textures & static meshes** for optional editor asset packs, inc
 
 Each pack shows its available and installed version, with downloaded versions and release notes in the details. **Check for updates** refreshes the catalog; **Download & install** installs the pack into the selected installation. **Download for later** caches it for offline installation (or updates it immediately if already installed). Close the game and editor before installing or updating.
 
+Ported maps live under `SCCT-Maps/ports/<game-name>/` and are shown in the **Ports** collection. The manager displays the source game for each port, while installing the map into the normal SCCT `Packages` folders.
+
 Downloads are verified, updates keep backups, and conflicting or edited packages are protected. Asset packs stay installed because maps may depend on them.
 
 ### Publishing asset packs

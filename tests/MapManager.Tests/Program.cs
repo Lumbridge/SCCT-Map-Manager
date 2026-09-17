@@ -228,6 +228,18 @@ foreach (var version in new[] { "v1.9.0", "v1.10.0" })
     seed["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = $"assets/Rainbow Six Vegas/{version}/Packages/StaticMeshes/R6V.usx", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 });
 var assetCatalog = CatalogParser.Parse(seed.ToJsonString());
 Check(assetCatalog.AssetPacks.Single().Version == "v1.10.0" && assetCatalog.Maps.All(m => !m.IsAssetPack), "tree catalog versions editor packs separately from maps");
+var portTree = new System.Text.Json.Nodes.JsonObject { ["sha"] = a.Commit, ["truncated"] = false, ["tree"] = new System.Text.Json.Nodes.JsonArray(
+    new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/Maps/CalyD.sdc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 },
+    new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/MapsEd/CalyD.sdc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 456 },
+    new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/Textures/CalyD-i.utc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 7 }) };
+var portCatalog = CatalogParser.Parse(portTree.ToJsonString());
+Check(portCatalog.Maps.Single().Id == "ports/rainbow-six-vegas" && portCatalog.Maps.Single().Name == "CalyD"
+    && portCatalog.Maps.Single().Category == "Ports" && portCatalog.Maps.Single().Game == "Rainbow Six Vegas"
+    && portCatalog.Maps.Single().IsPort, "catalog discovers port maps and records their source game");
+var portManifest = JsonSerializer.Serialize(new[] { portCatalog.Maps.Single() with {
+    Version = "v1.0.0", NotesPath = "ports/rainbow-six-vegas/README.md",
+    Files = portCatalog.Maps.Single().Files.Select(f => f with { Source = "releases/download/calyd-v1.0.0/" + Path.GetFileName(f.Source) }).ToList() } });
+Check(AssetCatalog.Parse(portManifest, a.Commit).Single().IsPort, "release catalog accepts port map packages");
 Check(JsonSerializer.Deserialize<Catalog>("{\"Commit\":\"old\",\"CheckedAt\":\"2026-01-01T00:00:00Z\",\"Maps\":[]}")!.AssetPacks.Count == 0, "old saved catalogs load with an empty asset library");
 if (treeArg >= 0)
 {

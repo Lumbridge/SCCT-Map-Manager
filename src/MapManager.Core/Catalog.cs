@@ -8,6 +8,8 @@ namespace MapManager.Core;
 public record MapFile(string Source, string Destination, string Hash, long Size);
 public record MapEntry(string Id, string Name, string Category, string Version, string Commit, string NotesPath, List<MapFile> Files)
 {
+    public string Game { get; init; } = "";
+    public bool IsPort => Id.StartsWith("ports/", StringComparison.Ordinal);
     public bool IsAssetPack => Id.StartsWith("assets/", StringComparison.Ordinal);
     public string Fingerprint => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('\n',
         Files.OrderBy(f => f.Destination, StringComparer.OrdinalIgnoreCase).Select(f => f.Destination.ToLowerInvariant() + ":" + f.Hash)))));
@@ -50,17 +52,22 @@ public static class CatalogParser
         ValidateHash(commit);
         var blobs = root.GetProperty("tree").EnumerateArray().Where(x => x.GetProperty("type").GetString() == "blob")
             .Select(x => new Blob(x.GetProperty("path").GetString()!, x.GetProperty("sha").GetString()!, x.GetProperty("size").GetInt64())).ToList();
-        var roots = new Dictionary<string, (string Id, string Name, string Category, string Version)>(StringComparer.Ordinal);
+        var roots = new Dictionary<string, (string Id, string Name, string Category, string Version, string Game)>(StringComparer.Ordinal);
         foreach (var b in blobs)
         {
             var parts = b.Path.Split('/');
             if (parts.Length < 5 || !b.Path.EndsWith(".sdc", StringComparison.OrdinalIgnoreCase)) continue;
             if (parts[0] == "release" && parts.Length == 6 && parts[3] == "Packages" && parts[4] == "Maps")
-                roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", parts[1] == "ShipD" ? "Shipment" : parts[1], "JP's Maps", parts[2]);
+                roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", parts[1] == "ShipD" ? "Shipment" : parts[1], "JP's Maps", parts[2], "");
             else if (parts.Length == 5 && parts[2] == "Packages" && parts[3] == "Maps" && parts[1] != "_shared")
             {
-                string? category = parts[0] switch { "community" => "Community", "enhanced" => "Enhanced", "recovered" => "Recovered", _ => null };
-                if (category != null) roots[string.Join('/', parts.Take(2))] = ($"{parts[0]}/{parts[1]}", parts[1], category, "Latest");
+                string? category = parts[0] switch { "community" => "Community", "enhanced" => "Enhanced", "recovered" => "Recovered", "ports" => "Ports", _ => null };
+                if (category != null)
+                {
+                    var game = parts[0] == "ports" ? Humanize(parts[1]) : "";
+                    var name = parts[0] == "ports" ? Path.GetFileNameWithoutExtension(parts[4]) : parts[1];
+                    roots[string.Join('/', parts.Take(2))] = ($"{parts[0]}/{parts[1]}", name, category, "Latest", game);
+                }
             }
         }
         var maps = new List<MapEntry>();
@@ -88,7 +95,7 @@ public static class CatalogParser
             if (files.Count == 0) continue;
             var notes = blobs.FirstOrDefault(b => b.Path.Equals(mapRoot + "/README.md", StringComparison.OrdinalIgnoreCase))?.Path
                 ?? blobs.FirstOrDefault(b => b.Path.Equals(mapRoot + "/README.txt", StringComparison.OrdinalIgnoreCase))?.Path ?? mapRoot + "/README.md";
-            maps.Add(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()));
+            maps.Add(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()) { Game = info.Game });
         }
         if (maps.Count == 0) throw new InvalidDataException("The repository contains no supported maps.");
         var packs = new List<MapEntry>();
@@ -118,6 +125,7 @@ public static class CatalogParser
         { AssetPacks = packs.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList() };
     }
     private static string VersionKey(string value) => Regex.Replace(value.TrimStart('v', 'V'), @"\d+", m => m.Value.PadLeft(10, '0'));
+    private static string Humanize(string value) => string.Join(' ', value.Split('-', StringSplitOptions.RemoveEmptyEntries).Select(part => part.Length == 0 ? part : char.ToUpperInvariant(part[0]) + part[1..]));
     public static void ValidateHash(string hash)
     {
         if (!Regex.IsMatch(hash, "^[a-fA-F0-9]{40}$")) throw new InvalidDataException("Invalid Git object hash.");
