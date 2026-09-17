@@ -5,7 +5,7 @@ namespace MapManager.App;
 
 public sealed class MainForm : Form
 {
-    private const string AppVersion = "v0.4.3";
+    private const string AppVersion = "v0.4.4";
     private static readonly Color Ink = Color.FromArgb(28, 39, 54), Accent = Color.FromArgb(0, 104, 118), Pale = Color.FromArgb(241, 245, 249);
     private readonly IRepositoryClient repository;
     private MapStore store;
