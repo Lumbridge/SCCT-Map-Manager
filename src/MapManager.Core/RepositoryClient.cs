@@ -46,7 +46,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
     }
     public async Task DownloadAsync(MapEntry map, MapFile file, string destination, CancellationToken cancel)
     {
-        var url = map.IsAssetPack && file.Source.StartsWith("releases/download/", StringComparison.Ordinal)
+        var url = (map.IsAssetPack || map.IsPort) && file.Source.StartsWith("releases/download/", StringComparison.Ordinal)
             ? ReleaseAsset(file.Source) : Raw(map, file.Source);
         using var response = await http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, cancel);
         response.EnsureSuccessStatusCode();
