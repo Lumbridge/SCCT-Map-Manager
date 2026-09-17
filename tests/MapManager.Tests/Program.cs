@@ -252,7 +252,7 @@ if (treeArg >= 0)
         .Select(path => path.Split('/')[2]).Distinct()
         .OrderByDescending(version => Version.Parse(version.TrimStart('v').Contains('.') ? version.TrimStart('v') : version.TrimStart('v') + ".0"));
     Check(catalog.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Shipment" && m.Version == shipmentVersions.First()), "select the latest original Shipment release");
-    Check(catalog.Maps.Any(m => m.Category == "Enhanced") && catalog.Maps.Count(m => m.Category == "Recovered") == 4, "include enhanced and recovered collections");
+    Check(catalog.Maps.Any(m => m.Category == "Enhanced") && catalog.Maps.Count(m => m.Category == "Recovered") == 5, "include enhanced and recovered collections");
     Check(catalog.Maps.Where(m => m.Category == "Community").All(m => m.Files.Any(f => f.Source.StartsWith("community/_shared/"))), "bundle shared community dependencies with each map");
     Check(catalog.Maps.All(m => m.Files.All(f => !f.Source.Contains("/src/") && !f.Source.EndsWith(".exe"))), "catalog excludes source artwork and executables");
     Console.WriteLine($"Catalog: {catalog.Maps.Count} maps at {catalog.Commit}");
