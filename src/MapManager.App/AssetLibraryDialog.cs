@@ -13,7 +13,7 @@ public sealed class AssetLibraryDialog : Form
         RowHeadersVisible = false, BackgroundColor = Color.White, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill };
     private readonly RichTextBox details = new() { Dock = DockStyle.Fill, ReadOnly = true, BackColor = Color.White, BorderStyle = BorderStyle.None };
     private readonly Label status = new() { Dock = DockStyle.Fill, AutoSize = true };
-    private readonly Button install = new() { Text = "Download & install", AutoSize = true };
+    private readonly Button install = new() { Text = "Download + install", AutoSize = true };
     private readonly Button download = new() { Text = "Download for later", AutoSize = true };
     private readonly Button refresh = new() { Text = "Check for updates", AutoSize = true };
     private readonly Button cancel = new() { Text = "Cancel", AutoSize = true, Visible = false };
@@ -82,8 +82,8 @@ public sealed class AssetLibraryDialog : Form
         notesOperation?.Cancel();notesOperation?.Dispose();notesOperation = new CancellationTokenSource();var ct = notesOperation.Token;
         var pack = Selected;install.Enabled = download.Enabled = pack != null && !busy;
         if (pack == null) { details.Text = "Published texture and static mesh packs appear here. Maps remain in the main library.";return; }
-        install.Text = store.HasUpdate(pack) ? "Update installed pack" : "Download & install";
-        if (!store.State.Installed.ContainsKey(pack.Id)) install.Text = "Download & install";
+        install.Text = store.HasUpdate(pack) ? "Update installed pack" : "Download + install";
+        if (!store.State.Installed.ContainsKey(pack.Id)) install.Text = "Download + install";
         var cached = store.State.Downloads.GetValueOrDefault(pack.Id);
         var heading = $"{pack.Name} • {pack.Version} • {pack.Bytes / (1024d * 1024):0.0} MB\n" +
             (cached != null ? $"Downloaded: {cached.Version}\n" : "") + string.Join("\n", pack.Files.Select(f => f.Destination)) + "\n\n";

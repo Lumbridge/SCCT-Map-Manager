@@ -31,14 +31,20 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         {
             assets.EnsureSuccessStatusCode();
             var packs = AssetCatalog.Parse(await assets.Content.ReadAsStringAsync(timeout.Token), catalog.Commit);
+            var recoveredAssets = catalog.Maps.Where(m => m.Category == "Recovered")
+                .Select(m => new MapEntry("assets/recovered-" + Slug(m.Name), m.Name + " assets", "Editor assets", "v1.0.0", m.Commit,
+                    m.NotesPath, m.Files.Where(f => SafePaths.IsEditorAsset(f.Destination)).ToList()))
+                .Where(p => p.Files.Count > 0);
             catalog = catalog with {
                 Maps = CatalogPresentation.Order(catalog.Maps.Concat(packs.Where(p => p.IsPort))).ToList(),
-                AssetPacks = packs.Where(p => p.IsAssetPack).Concat(catalog.AssetPacks).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList() };
+                AssetPacks = packs.Where(p => p.IsAssetPack).Concat(catalog.AssetPacks).Concat(recoveredAssets).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList() };
         }
         return catalog;
         }
         catch (OperationCanceledException) when (!cancel.IsCancellationRequested) { throw new IOException("The catalog server timed out. The saved or bundled catalog is still available."); }
     }
+    private static string Slug(string value) => string.Join('-', value.Split(' ', StringSplitOptions.RemoveEmptyEntries)
+        .Select(part => new string(part.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant())) switch { { Length: > 0 } slug => slug, _ => "map" };
     private static string Raw(MapEntry map, string path)
     {
         CatalogParser.ValidateHash(map.Commit); SafePaths.ValidateRelative(path);
