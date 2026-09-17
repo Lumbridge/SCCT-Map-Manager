@@ -5,6 +5,7 @@ namespace MapManager.App;
 
 public sealed class MainForm : Form
 {
+    private const string AppVersion = "v0.4.3";
     private static readonly Color Ink = Color.FromArgb(28, 39, 54), Accent = Color.FromArgb(0, 104, 118), Pale = Color.FromArgb(241, 245, 249);
     private readonly IRepositoryClient repository;
     private MapStore store;
@@ -40,7 +41,7 @@ public sealed class MainForm : Form
     {
         this.repository = repository;store = new MapStore(root, repository, () => Program.GuardGame(root));
         SeedCatalog();
-        Text = "SCCT Map Manager";Font = new Font("Segoe UI", 10);ForeColor = Ink;BackColor = Pale;
+        Text = $"SCCT Map Manager {AppVersion}";Font = new Font("Segoe UI", 10);ForeColor = Ink;BackColor = Pale;
         AutoScaleDimensions = new SizeF(96, 96);AutoScaleMode = AutoScaleMode.Dpi;MinimumSize = new Size(1050, 800);Size = new Size(1280, 900);StartPosition = FormStartPosition.CenterScreen;
         BuildLayout();WireEvents();
         var toolsMenu = new MenuStrip();
@@ -72,7 +73,7 @@ public sealed class MainForm : Form
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 3; i++) header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
-        var title = new Label { Text = "SCCT MAP MANAGER", Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
+        var title = new Label { Text = $"SCCT MAP MANAGER {AppVersion}", Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
         foreach (var button in new[] { repo, refresh, backups, folder, runtime })
         {
             button.AutoSize = false;button.Height = 36;button.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -93,8 +94,9 @@ public sealed class MainForm : Form
         grid.EnableHeadersVisualStyles = false;grid.ColumnHeadersHeight = 42;grid.RowTemplate.Height = 42;
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Map", HeaderText = "Map", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 140, FillWeight = 135 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Collection", HeaderText = "Collection", Width = 125 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Version", HeaderText = "Version", Width = 85 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 145, FillWeight = 110 });
-        foreach (DataGridViewColumn column in grid.Columns) column.SortMode = DataGridViewColumnSortMode.NotSortable;
+        foreach (DataGridViewColumn column in grid.Columns) column.SortMode = DataGridViewColumnSortMode.Programmatic;
         split.Panel1.Controls.Add(grid);
         var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, BackColor = Color.White, Padding = new Padding(18) };
         for (int i = 0; i < 6; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -119,6 +121,7 @@ public sealed class MainForm : Form
     {
         search.TextChanged += (_, _) => FillMaps();category.SelectedIndexChanged += (_, _) => FillMaps();statusFilter.SelectedIndexChanged += (_, _) => FillMaps();
         grid.CellPainting += PaintPinnedMap;
+        grid.ColumnHeaderMouseClick += (_, e) => SortRows(e.ColumnIndex);
         grid.SelectionChanged += (_, _) => NotesLoad = Detail();
         refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
@@ -212,7 +215,7 @@ public sealed class MainForm : Form
                 "Downloaded" => store.State.Downloads.ContainsKey(map.Id), "Not downloaded" => !store.State.Downloads.ContainsKey(map.Id), _ => true
             };
             if (!matches) continue;
-            int index = grid.Rows.Add(map.Name, map.Category, state);grid.Rows[index].Tag = map;
+            int index = grid.Rows.Add(map.Name, map.Category, DisplayVersion(map), state);grid.Rows[index].Tag = map;
             if (CatalogPresentation.IsJpMap(map))
             {
                 grid.Rows[index].Cells[0].Style.Padding = new Padding(30, 4, 4, 4);
@@ -223,6 +226,31 @@ public sealed class MainForm : Form
         count.Text = $"{grid.Rows.Count} maps shown  •  {maps.Count} in the library  •  {store.State.Installed.Values.Count(m => m.Enabled && !m.Entry.IsAssetPack)} managed and enabled";
         catalogStatus.Text = store.CatalogMessage;NotesLoad = Detail();
     }
+    private static string DisplayVersion(MapEntry map)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(map.Version ?? "", @"^v\d+\.\d+(\.\d+)?$", System.Text.RegularExpressions.RegexOptions.IgnoreCase)) return map.Version!;
+        return map.Category.Equals("Community", StringComparison.OrdinalIgnoreCase) ? "v1.0" : "";
+    }
+    private void SortRows(int columnIndex)
+    {
+        if (grid.Rows.Count < 2) return;
+        var order = grid.Tag as SortState;
+        var ascending = order?.Column != columnIndex || !order.Ascending;
+        var rows = grid.Rows.Cast<DataGridViewRow>().Select(r => (Map: (MapEntry)r.Tag!, Values: r.Cells.Cast<DataGridViewCell>().Select(c => c.Value?.ToString() ?? "").ToArray())).ToList();
+        rows.Sort((a, b) =>
+        {
+            var result = string.Compare(a.Values[columnIndex], b.Values[columnIndex], StringComparison.OrdinalIgnoreCase);
+            return ascending ? result : -result;
+        });
+        grid.Rows.Clear();
+        foreach (var row in rows)
+        {
+            var index = grid.Rows.Add(row.Values);
+            grid.Rows[index].Tag = row.Map;
+        }
+        grid.Tag = new SortState(columnIndex, ascending);
+    }
+    private sealed record SortState(int Column, bool Ascending);
     private void PaintPinnedMap(object? sender, DataGridViewCellPaintingEventArgs e)
     {
         if (e.RowIndex < 0 || e.ColumnIndex != 0 || grid.Rows[e.RowIndex].Tag is not MapEntry map || !CatalogPresentation.IsJpMap(map)) return;

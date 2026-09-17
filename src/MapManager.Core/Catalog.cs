@@ -65,7 +65,7 @@ public static class CatalogParser
                 if (category != null)
                 {
                     var game = parts[0] == "ports" ? Humanize(parts[1]) : "";
-                    var name = parts[0] == "ports" ? Path.GetFileNameWithoutExtension(parts[4]) : parts[1];
+                    var name = parts[0] == "ports" ? PortDisplayName(Path.GetFileNameWithoutExtension(parts[4])) : parts[1];
                     roots[string.Join('/', parts.Take(2))] = ($"{parts[0]}/{parts[1]}", name, category, "Latest", game);
                 }
             }
@@ -126,6 +126,7 @@ public static class CatalogParser
     }
     private static string VersionKey(string value) => Regex.Replace(value.TrimStart('v', 'V'), @"\d+", m => m.Value.PadLeft(10, '0'));
     private static string Humanize(string value) => string.Join(' ', value.Split('-', StringSplitOptions.RemoveEmptyEntries).Select(part => part.Length == 0 ? part : char.ToUpperInvariant(part[0]) + part[1..]));
+    private static string PortDisplayName(string value) => value.Equals("CalyD", StringComparison.OrdinalIgnoreCase) ? "Calypso Casino" : value;
     public static void ValidateHash(string hash)
     {
         if (!Regex.IsMatch(hash, "^[a-fA-F0-9]{40}$")) throw new InvalidDataException("Invalid Git object hash.");
