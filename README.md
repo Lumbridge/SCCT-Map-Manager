@@ -1,48 +1,42 @@
 # SCCT Map Manager
 
-Browse, download and manage maps for **Splinter Cell: Chaos Theory Versus**, using the [SCCT Maps collection](https://github.com/Lumbridge/SCCT-Maps).
+Download, enable and update maps for **Splinter Cell: Chaos Theory Versus** from the [SCCT Maps collection](https://github.com/Lumbridge/SCCT-Maps) — no manual file copying.
+
+![SCCT Map Manager](docs/images/map-manager.png)
 
 ## Install
 
-[Download the latest release](https://github.com/Lumbridge/SCCT-Map-Manager/releases/latest), extract it, and put **SCCT Map Manager.exe** in your game's `System` folder. Run it from there.
+1. [Download the latest release](https://github.com/Lumbridge/SCCT-Map-Manager/releases/latest) and extract it.
+2. Put **SCCT Map Manager.exe** in your game's `System` folder.
+3. Run it from there.
 
-Requires Windows 10/11 x64 and Enhanced SCCT Versus 3.6. To update, close the manager and replace the EXE.
+Needs Windows 10/11 (64-bit) and Enhanced SCCT Versus 3.6. To update the manager, close it and replace the EXE.
 
 ## Using it
 
-- Search or filter the map list.
-- **Enable map** downloads and installs a map. **Disable map** removes it from play; you can enable it again later.
-- **Download map** saves a map for later, or updates it if already enabled.
-- Check **Include editable source maps** if you want the available editor files.
-- **Change folder** switches game installations.
+- Pick a map from the list (search or filter by collection) and press **Enable map**. It downloads, verifies and installs the map.
+- **Disable map** takes it out of play; enable it again any time.
+- **Download map** just saves it for later, or updates an installed map.
+- Tick **Include editable source maps** if you also want the editor (`MapsEd`) files.
+- **Change folder** switches to another game installation.
 
-Close the game and editor before enabling, disabling or updating installed maps. Downloaded maps can be enabled offline.
+Close the game and the editor before enabling, disabling or updating maps. Everyone on a server needs the same map files.
 
-## Textures and static meshes
+### Textures and static meshes
 
-Open **Tools → Textures & static meshes** for optional editor asset packs, including published Rainbow Six Vegas conversions. This library is separate from the main map list. Search by pack or package name, or filter for textures, static meshes or updates.
+**Tools → Textures & static meshes** lists optional asset packs for map makers, such as the converted Rainbow Six Vegas meshes. Install or update them like maps. Packs stay installed because maps may depend on them.
 
-Each pack shows its available and installed version, with downloaded versions and release notes in the details. **Check for updates** refreshes the catalog; **Download & install** installs the pack into the selected installation. **Download for later** caches it for offline installation (or updates it immediately if already installed). Close the game and editor before installing or updating.
+### If custom maps crash the game
 
-Ported maps live under `SCCT-Maps/ports/<game-name>/` and are shown in the **Ports** collection. The manager displays the source game for each port, while installing the map into the normal SCCT `Packages` folders.
+Try **DLL patch / restore...** in the toolbar. It backs up your current DLL first, and **Restore selected backup** puts it back. It does not fix every crash.
 
-Downloads are verified, updates keep backups, and conflicting or edited packages are protected. Asset packs stay installed because maps may depend on them.
+### Backups
 
-### Publishing asset packs
+Everything the manager downloads, disables or backs up lives in `System/SCCTMapManagerData`; keep that folder. **Open backups** shows it. The manager refuses to overwrite maps you have edited yourself.
 
-Packs use stable IDs and explicit versions such as `v1.0.0`. Small packs can live in `SCCT-Maps/assets/<pack>/v1.0.0/Packages/Textures` and `Packages/StaticMeshes`, with release notes at the version root. The latest numeric version is listed.
+## For map publishers
 
-For large packages, put `asset-catalog.json` at the SCCT-Maps repository root and host binaries on versioned releases in that repository. Each manifest entry contains `Id`, `Name`, `Category`, `Version`, `Commit`, `NotesPath` and `Files`; each file contains a relative `releases/download/<tag>/<filename>` source, package destination, Git blob SHA-1 and byte size. Release tags end with the pack version. Notes live at `assets/<pack>/<version>/README.md`. The manager pins the manifest and notes to the fetched commit, verifies downloaded bytes, and retains installed versions across restarts. Use a new version for every update and keep old releases available.
-
-`python tools/prepare-editor-assets.py "<source installation>" "<new draft directory>"` prepares the selected local Rainbow Six packages, manifest and notes without changing the source or uploading anything. Review the draft before publishing. GitHub publication requires Ryan's explicit approval.
-
-## DLL patch
-
-For custom-map loading crashes, try **DLL patch / restore** in the toolbar. The optional patch backs up your current DLL; use **Restore selected backup** to switch back. It may not fix every crash.
-
-## Backups
-
-Keep `System/SCCTMapManagerData` - it holds downloads, disabled maps and backups. **Open backups** opens the backup folder. Updates stop if they would overwrite your edited maps.
+How to publish maps and asset packs so the manager can find them: [docs/publishing.md](docs/publishing.md).
 
 ## Build
 
@@ -52,4 +46,4 @@ With the .NET 10 SDK installed:
 ./build.ps1 -Test
 ```
 
-Output: `artifacts/publish`. Add `-LiveTests` to test downloads against a disposable installation.
+Output goes to `artifacts/publish`. Add `-LiveTests` to exercise downloads against a disposable installation.
