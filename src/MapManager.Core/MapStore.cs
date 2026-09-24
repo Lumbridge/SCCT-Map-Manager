@@ -44,6 +44,7 @@ public sealed class MapStore : IDisposable
             if (State.Format != 1) throw new InvalidDataException("This library was created by a newer map manager.");
             if (Load<Journal>("pending.json") is { } pending) { this.guard(); Rollback(pending); }
             Catalog = Load<Catalog>("catalog.json");
+            if (Catalog != null) Catalog = PortLayout.Normalize(Catalog);
             if (Catalog != null) CatalogMessage = "Saved catalog • " + Catalog.CheckedAt.LocalDateTime.ToString("g");
         }
         catch { fileLock.Dispose(); throw; }
@@ -63,14 +64,14 @@ public sealed class MapStore : IDisposable
     private string Cache(string hash) { CatalogParser.ValidateHash(hash); return SafePaths.Under(DataRoot, "Cache/" + hash.ToLowerInvariant() + ".blob"); }
     public void UseFallbackCatalog(Catalog fallback)
     {
-        if (Catalog != null) return;Catalog = fallback;CatalogMessage = "Bundled catalog • refresh to check for updates";
+        if (Catalog != null) return;Catalog = PortLayout.Normalize(fallback);CatalogMessage = "Bundled catalog • refresh to check for updates";
     }
     public async Task RefreshAsync(CancellationToken cancel)
     {
         await operations.WaitAsync(cancel);
         try
         {
-            var fresh = await repository.FetchCatalogAsync(cancel);
+            var fresh = PortLayout.Normalize(await repository.FetchCatalogAsync(cancel));
             Save("catalog.json", fresh); Catalog = fresh;
             CatalogMessage = "Up to date • " + fresh.CheckedAt.LocalDateTime.ToString("g");
         }
@@ -144,6 +145,9 @@ public sealed class MapStore : IDisposable
     }
     private static StoreState Normalize(StoreState state)
     {
+        state.Downloads = state.Downloads.ToDictionary(p => PortLayout.CanonicalId(p.Key), p => PortLayout.Normalize(p.Value));
+        state.Installed = state.Installed.ToDictionary(p => PortLayout.CanonicalId(p.Key), p => p.Value);
+        foreach (var map in state.Installed.Values) map.Entry = PortLayout.Normalize(map.Entry);
         foreach (var map in state.Installed.Values) map.Files = new Dictionary<string, string>(map.Files, StringComparer.OrdinalIgnoreCase);
         return state;
     }

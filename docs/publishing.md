@@ -1,6 +1,28 @@
 # Publishing maps and asset packs
 
-The manager reads the [SCCT-Maps](https://github.com/Lumbridge/SCCT-Maps) repository. Maps are picked up from its per-map `Packages` folders; ported maps live under `ports/<game-name>/` and appear in the **Ports** collection with their source game shown, while still installing into the normal SCCT `Packages` folders.
+The manager reads the [SCCT-Maps](https://github.com/Lumbridge/SCCT-Maps) repository. Maps are picked up from its per-map `Packages` folders; ported maps live under `ports/<game-name>/<map-name>/` and appear in the **Ports** collection with their source game shown, while still installing into the normal SCCT `Packages` folders.
+
+## Ported maps
+
+Give each map its own folder, for example:
+
+```text
+ports/
+  rainbow-six-vegas/
+    calypso-casino/
+      README.md
+      Packages/Maps/CalyD.sdc
+      Packages/MapsEd/CalyD.sdc
+      Packages/Textures/CalyD-i.utc
+  splinter-cell-double-agent/
+    blackwing/
+      README.md
+      Packages/Maps/SCDA_BLKG1.sdc
+```
+
+Keep each map's dependencies inside its own folder. Maps from the same game are listed and installed independently. Folder names can use readable hyphenated names; the manager displays spaces.
+
+For ports hosted as release assets, use `ports/<game-name>/<map-name>` as the manifest `Id`, identify the source `Game`, and set `NotesPath` to `ports/<game-name>/<map-name>/README.md`. The folder contains notes and checksums; the packages remain on their existing versioned releases. Existing flat port identities are recognized so installed maps retain their download and enable/disable state.
 
 ## Asset packs
 

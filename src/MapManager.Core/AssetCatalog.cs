@@ -13,7 +13,8 @@ public static class AssetCatalog
         foreach (var entry in entries)
         {
             var port = entry.IsPort;
-            if ((!entry.IsAssetPack && !port) || entry.Id.Split('/').Length != 2 || string.IsNullOrWhiteSpace(entry.Name)
+            var depth = entry.Id.Split('/').Length;
+            if ((!entry.IsAssetPack && !port) || (port ? depth is not (2 or 3) : depth != 2) || string.IsNullOrWhiteSpace(entry.Name)
                 || !Regex.IsMatch(entry.Version, @"^v\d+\.\d+\.\d+$") || entry.Files.Count == 0)
                 throw new InvalidDataException("Invalid asset pack identity or version.");
             if (port && string.IsNullOrWhiteSpace(entry.Game)) throw new InvalidDataException("Port entries must identify their source game.");
@@ -29,6 +30,6 @@ public static class AssetCatalog
                     throw new InvalidDataException("Invalid asset download.");
             }
         }
-        return entries.GroupBy(p => p.Id).Select(g => g.OrderByDescending(p => Version.Parse(p.Version[1..])).First() with { Commit = commit }).ToList();
+        return entries.Select(PortLayout.Normalize).GroupBy(p => p.Id).Select(g => g.OrderByDescending(p => Version.Parse(p.Version[1..])).First() with { Commit = commit }).ToList();
     }
 }

@@ -59,6 +59,12 @@ public static class CatalogParser
             if (parts.Length < 5 || !b.Path.EndsWith(".sdc", StringComparison.OrdinalIgnoreCase)) continue;
             if (parts[0] == "release" && parts.Length == 6 && parts[3] == "Packages" && parts[4] == "Maps")
                 roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", parts[1] == "ShipD" ? "Shipment" : parts[1], "JP's Maps", parts[2], "");
+            else if (parts[0] == "ports" && parts.Length == 6 && parts[3] == "Packages" && parts[4] == "Maps" && parts[2] != "_shared")
+            {
+                SafePaths.ValidateRelative(b.Path);
+                var id = string.Join('/', parts.Take(3));
+                roots[id] = (id, Humanize(parts[2]), "Ports", "Latest", Humanize(parts[1]));
+            }
             else if (parts.Length == 5 && parts[2] == "Packages" && parts[3] == "Maps" && parts[1] != "_shared")
             {
                 string? category = parts[0] switch { "community" => "Community", "enhanced" => "Enhanced", "recovered" => "Recovered", "ports" => "Ports", _ => null };
@@ -95,7 +101,7 @@ public static class CatalogParser
             if (files.Count == 0) continue;
             var notes = blobs.FirstOrDefault(b => b.Path.Equals(mapRoot + "/README.md", StringComparison.OrdinalIgnoreCase))?.Path
                 ?? blobs.FirstOrDefault(b => b.Path.Equals(mapRoot + "/README.txt", StringComparison.OrdinalIgnoreCase))?.Path ?? mapRoot + "/README.md";
-            maps.Add(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()) { Game = info.Game });
+            maps.Add(PortLayout.Normalize(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()) { Game = info.Game }));
         }
         if (maps.Count == 0) throw new InvalidDataException("The repository contains no supported maps.");
         var packs = new List<MapEntry>();

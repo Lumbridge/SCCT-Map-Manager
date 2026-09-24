@@ -5,7 +5,7 @@ namespace MapManager.App;
 
 public sealed class MainForm : Form
 {
-    private const string AppVersion = "v0.4.4";
+    private const string AppVersion = "v0.4.6";
     private static readonly Color Ink = Color.FromArgb(28, 39, 54), Accent = Color.FromArgb(0, 104, 118), Pale = Color.FromArgb(241, 245, 249);
     private readonly IRepositoryClient repository;
     private MapStore store;
@@ -21,7 +21,6 @@ public sealed class MainForm : Form
     private readonly CheckBox source = new() { AutoSize = true, Text = "Include editable source maps (MapsEd)" };
     private readonly Button download = Button("Download / update"), enable = Button("Enable map", true), disable = Button("Disable map"), refresh = Button("Refresh"), folder = Button("Change folder");
     private readonly Button backups = Button("Open backups"), repo = Button("Repository"), cancel = Button("Cancel");
-    private readonly Button runtime = Button("DLL patch / restore…");
     private readonly RichTextBox notes = new() { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Color.White, DetectUrls = true, WordWrap = true };
     private readonly Label target = new() { AutoSize = false, ForeColor = Color.DimGray, Dock = DockStyle.Fill, AutoEllipsis = true, UseMnemonic = false };
     private readonly Label count = new() { AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray };
@@ -74,13 +73,13 @@ public sealed class MainForm : Form
         for (int i = 0; i < 3; i++) header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         header.RowStyles.Add(new RowStyle(SizeType.Absolute, 55));header.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
         var title = new Label { Text = $"SCCT MAP MANAGER {AppVersion}", Font = new Font("Segoe UI", 23, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 0, 0, 8) };
-        foreach (var button in new[] { repo, refresh, backups, folder, runtime })
+        foreach (var button in new[] { repo, refresh, backups, folder })
         {
             button.AutoSize = false;button.Height = 36;button.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
             button.Margin = new Padding(8, 0, 0, 8);button.Padding = new Padding(6, 0, 6, 0);
         }
         header.Controls.Add(title, 0, 0);header.Controls.Add(repo, 1, 0);header.Controls.Add(refresh, 2, 0);header.Controls.Add(folder, 3, 0);
-        header.Controls.Add(target, 0, 1);header.Controls.Add(backups, 1, 1);header.Controls.Add(runtime, 2, 1);header.SetColumnSpan(runtime, 2);outer.Controls.Add(header, 0, 0);
+        header.Controls.Add(target, 0, 1);header.Controls.Add(backups, 1, 1);outer.Controls.Add(header, 0, 0);
         var filters = Table(3, 54, 23, 23);filters.AutoSize = false;filters.Padding = new Padding(0, 6, 0, 12);
         filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
         category.Items.AddRange(["All collections", CatalogPresentation.JpMaps, "Community", "Enhanced", "Recovered", "Ports"]);category.SelectedIndex = 0;
@@ -125,7 +124,6 @@ public sealed class MainForm : Form
         grid.SelectionChanged += (_, _) => NotesLoad = Detail();
         refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
-        runtime.Click += (_, _) => { using var dialog = new RuntimePatchDialog(store.GameRoot);dialog.ShowDialog(this); };
         backups.Click += (_, _) => { var path = SafePaths.Under(store.DataRoot, "Backups");Directory.CreateDirectory(path);Open(path); };
         cancel.Click += (_, _) => { operation?.Cancel();cancel.Enabled = false;cancel.Text = "Cancelling…"; };
         download.Click += async (_, _) => { if (Selected is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => store.DownloadAsync(map, include, Reporter(), ct)); } };
@@ -195,7 +193,7 @@ public sealed class MainForm : Form
     }
     private void SetBusy()
     {
-        foreach (Control c in new Control[] { search, category, statusFilter, grid, source, download, enable, disable, folder, refresh, runtime }) c.Enabled = !busy;
+        foreach (Control c in new Control[] { search, category, statusFilter, grid, source, download, enable, disable, folder, refresh }) c.Enabled = !busy;
         cancel.Visible = busy;cancel.Enabled = busy;cancel.Text = "Cancel";progress.Visible = busy;
     }
     private void FillMaps()

@@ -16,41 +16,6 @@ string Fixture(string name)
 void Put(string root, string path, string text) { var dest = SafePaths.Under(root, path);Directory.CreateDirectory(Path.GetDirectoryName(dest)!);File.WriteAllText(dest, text); }
 string Read(string root, string path) => File.ReadAllText(SafePaths.Under(root, path));
 var client = new FakeClient(output);
-var runtimeRoot = Fixture("runtime");
-Put(runtimeRoot, "System/Reloaded.Core.dll", "original runtime");
-var runtime = new RuntimePatch(runtimeRoot, () => { });
-Check(runtime.Status().StartsWith("A different DLL"), "runtime initially detects an unpatched copy");
-runtime.Install();
-Check(runtime.Status().StartsWith("Patched"), "verified bundled runtime is installed");
-var originalBackup = runtime.ListBackups().Single();
-Check(File.ReadAllText(Path.Combine(runtimeRoot, "System/SCCTMapManagerData/Backups/Runtime", originalBackup.Name)) == "original runtime", "dated runtime backup preserves original bytes");
-runtime.Install();Check(runtime.ListBackups().Count == 1, "repeated patch install does not back up itself");
-runtime.Restore(originalBackup);
-Check(Read(runtimeRoot, "System/Reloaded.Core.dll") == "original runtime", "restore dated runtime backup byte for byte");
-Check(runtime.ListBackups().Count == 2, "restore also preserves the replaced patched DLL");
-runtime.Install();Put(runtimeRoot, "System/Reloaded.Core.dll", "original runtime");
-Check(new RuntimePatch(runtimeRoot, () => { }).Status().StartsWith("Your previous DLL"), "manual native restoration detected across restart without stale state");
-File.Move(Path.Combine(runtimeRoot, "System/Reloaded.Core.dll"), Path.Combine(runtimeRoot, "System/Reloaded.Core.dll.off"));
-Check(runtime.Status().Contains("missing or renamed"), "manual runtime rename detected");
-runtime.Restore(originalBackup);Check(Read(runtimeRoot, "System/Reloaded.Core.dll") == "original runtime", "restore works when active DLL was renamed");
-Check(Read(runtimeRoot, "System/Reloaded.Core.dll.off") == "original runtime", "manually renamed DLL is preserved");
-Put(runtimeRoot, "System/Reloaded.Core.dll", "another native version");
-Check(runtime.Status().StartsWith("A different DLL"), "unknown external replacement is not claimed to be patched");
-runtime.Install();
-Check(runtime.ListBackups().Any(b => File.ReadAllText(Path.Combine(runtimeRoot, "System/SCCTMapManagerData/Backups/Runtime", b.Name)) == "another native version"), "reapply preserves externally replaced DLL");
-var corruptBackupPath = Path.Combine(runtimeRoot, "System/SCCTMapManagerData/Backups/Runtime", originalBackup.Name);
-File.WriteAllText(corruptBackupPath, "damaged");
-await Reject(() => { runtime.Restore(originalBackup);return Task.CompletedTask; }, "corrupt runtime backup rejected before changing installed DLL");
-Check(runtime.Status().StartsWith("Patched"), "corrupt restore leaves patched runtime intact");
-await Reject(() => { new RuntimePatch(runtimeRoot, () => throw new IOException("Game is open")).Restore(runtime.ListBackups().First());return Task.CompletedTask; }, "runtime changes enforce game/editor guard");
-if (OperatingSystem.IsWindows())
-{
-    Put(runtimeRoot, "System/Reloaded.Core.dll", "locked native runtime");
-    using (var locked = new FileStream(Path.Combine(runtimeRoot, "System/Reloaded.Core.dll"), FileMode.Open, FileAccess.Read, FileShare.Read))
-        await Reject(() => { runtime.Install();return Task.CompletedTask; }, "locked runtime replacement fails safely");
-    Check(Read(runtimeRoot, "System/Reloaded.Core.dll") == "locked native runtime", "locked DLL remains intact");
-}
-Check(!Directory.EnumerateFiles(Path.Combine(runtimeRoot, "System"), ".runtime-*.tmp").Any(), "runtime staging files cleaned after success and failure");
 var a = client.Map("original/A", "Alpha", "alpha-v1", "shared-v1", true);
 var b = client.Map("community/B", "Bravo", "bravo-v1", "shared-v1");
 var update = client.Map("original/A", "Alpha", "alpha-v2", "shared-v1", true);
@@ -228,18 +193,110 @@ foreach (var version in new[] { "v1.9.0", "v1.10.0" })
     seed["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = $"assets/Rainbow Six Vegas/{version}/Packages/StaticMeshes/R6V.usx", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 });
 var assetCatalog = CatalogParser.Parse(seed.ToJsonString());
 Check(assetCatalog.AssetPacks.Single().Version == "v1.10.0" && assetCatalog.Maps.All(m => !m.IsAssetPack), "tree catalog versions editor packs separately from maps");
-var portTree = new System.Text.Json.Nodes.JsonObject { ["sha"] = a.Commit, ["truncated"] = false, ["tree"] = new System.Text.Json.Nodes.JsonArray(
-    new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/Maps/CalyD.sdc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 },
-    new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/MapsEd/CalyD.sdc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 456 },
-    new System.Text.Json.Nodes.JsonObject { ["path"] = "ports/rainbow-six-vegas/Packages/Textures/CalyD-i.utc", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 7 }) };
+var portTree = new System.Text.Json.Nodes.JsonObject { ["sha"] = a.Commit, ["truncated"] = false, ["tree"] = new System.Text.Json.Nodes.JsonArray() };
+foreach (var path in new[] {
+    "ports/rainbow-six-vegas/calypso-casino/Packages/Maps/CalyD.sdc",
+    "ports/rainbow-six-vegas/calypso-casino/Packages/MapsEd/CalyD.sdc",
+    "ports/rainbow-six-vegas/calypso-casino/Packages/Textures/CalyD-i.utc",
+    "ports/rainbow-six-vegas/calypso-casino/README.md",
+    "ports/rainbow-six-vegas/second-map/Packages/Maps/Second.sdc",
+    "ports/splinter-cell-double-agent/blackwing/Packages/Maps/SCDA_BLKG1.sdc" })
+    portTree["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = path, ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 });
 var portCatalog = CatalogParser.Parse(portTree.ToJsonString());
-Check(portCatalog.Maps.Single().Id == "ports/rainbow-six-vegas" && portCatalog.Maps.Single().Name == "Calypso Casino"
-    && portCatalog.Maps.Single().Category == "Ports" && portCatalog.Maps.Single().Game == "Rainbow Six Vegas"
-    && portCatalog.Maps.Single().IsPort, "catalog discovers port maps and records their source game");
-var portManifest = JsonSerializer.Serialize(new[] { portCatalog.Maps.Single() with {
-    Version = "v1.0.0", NotesPath = "ports/rainbow-six-vegas/README.md",
-    Files = portCatalog.Maps.Single().Files.Select(f => f with { Source = "releases/download/calyd-v1.0.0/" + Path.GetFileName(f.Source) }).ToList() } });
-Check(AssetCatalog.Parse(portManifest, a.Commit).Single().IsPort, "release catalog accepts port map packages");
+var casino = portCatalog.Maps.Single(m => m.Id == "ports/rainbow-six-vegas/calypso-casino");
+Check(casino.Name == "Calypso Casino" && casino.Category == "Ports" && casino.Game == "Rainbow Six Vegas" && casino.IsPort,
+    "catalog discovers nested port maps and records their source game");
+Check(portCatalog.Maps.Count == 3 && casino.Files.Count == 3 && casino.Files.All(f => f.Source.StartsWith(casino.Id + "/"))
+    && portCatalog.Maps.Single(m => m.Name == "Second Map").Files.Single().Destination == "Packages/Maps/Second.sdc",
+    "multiple maps from one game remain independent with only their own packages");
+Check(casino.NotesPath == casino.Id + "/README.md" && casino.HasSource, "nested map notes and editable source are discovered");
+var portManifest = JsonSerializer.Serialize(new[] { casino with {
+    Version = "v1.0.0", NotesPath = casino.Id + "/README.md",
+    Files = casino.Files.Select(f => f with { Source = "releases/download/calyd-v1.0.0/" + Path.GetFileName(f.Source) }).ToList() } });
+var releasedPort = AssetCatalog.Parse(portManifest, a.Commit).Single();
+Check(releasedPort.Id == casino.Id, "release catalog accepts game/map identities");
+var legacyManifest = portManifest.Replace(casino.Id, "ports/rainbow-six-vegas");
+var legacyPort = AssetCatalog.Parse(legacyManifest, a.Commit).Single();
+Check(legacyPort.Id == casino.Id && legacyPort.NotesPath == "ports/rainbow-six-vegas/README.md",
+    "published legacy manifest retains pinned notes while upgrading port identity");
+await Reject(() => { AssetCatalog.Parse(portManifest.Replace(casino.Id + "/README.md", "ports/rainbow-six-vegas/second-map/README.md"), a.Commit);return Task.CompletedTask; },
+    "port notes must belong to the correct map");
+foreach (var mode in new[] { "enabled", "disabled", "downloaded" })
+{
+    var migrationRoot = Fixture("port-migration-" + mode);
+    var migrated = client.Map(casino.Id, "CalyD", "ported-map", "shared-v1", true) with { Category = "Ports", Game = "Rainbow Six Vegas" };
+    using (var store = new MapStore(migrationRoot, client))
+    {
+        if (mode == "downloaded") await store.DownloadAsync(migrated, true, null, default);
+        else
+        {
+            await store.EnableAsync(migrated, true, null, default);
+            if (mode == "disabled") await store.DisableAsync(migrated, default);
+        }
+    }
+    var statePath = Path.Combine(migrationRoot, "System/SCCTMapManagerData/state.json");
+    File.WriteAllText(statePath, File.ReadAllText(statePath).Replace(casino.Id, "ports/rainbow-six-vegas"));
+    File.WriteAllText(Path.Combine(migrationRoot, "System/SCCTMapManagerData/catalog.json"),
+        JsonSerializer.Serialize(new Catalog(a.Commit, DateTimeOffset.UtcNow, [migrated with { Id = "ports/rainbow-six-vegas" }])));
+    using (var store = new MapStore(migrationRoot, client))
+    {
+        Check(store.Catalog!.Maps.Single().Id == casino.Id && store.State.Downloads.ContainsKey(casino.Id)
+            && !store.State.Downloads.ContainsKey("ports/rainbow-six-vegas"), "legacy catalog and download migrate: " + mode);
+        Check(store.Status(migrated).Equals(mode, StringComparison.OrdinalIgnoreCase), "legacy port retains state: " + mode);
+        if (mode == "disabled") await store.RestoreDisabledAsync(migrated, default);
+        else if (mode == "downloaded") await store.EnableAsync(migrated, true, null, default);
+        await store.DisableAsync(migrated, default);
+        Check(!File.Exists(Path.Combine(migrationRoot, "Packages/Maps/CalyD.sdc")), "migrated port disables without losing ownership: " + mode);
+        await store.RestoreDisabledAsync(migrated, default);
+        Check(Read(migrationRoot, "Packages/Maps/CalyD.sdc") == "ported-map" && Read(migrationRoot, "Packages/MapsEd/CalyD.sdc") == "source ported-map",
+            "migrated port restores playable and editable files: " + mode);
+    }
+    using (var reopened = new MapStore(migrationRoot, client))
+        Check(reopened.State.Installed.Keys.Single() == casino.Id && reopened.Status(migrated) == "Enabled", "migrated identity persists after restart: " + mode);
+}
+var manifestArg = Array.IndexOf(args, "--port-manifest");
+if (manifestArg >= 0)
+{
+    var manifestPath = Path.GetFullPath(args[manifestArg + 1]);
+    var ports = AssetCatalog.Parse(File.ReadAllText(manifestPath), a.Commit).Where(m => m.IsPort).ToList();
+    Check(ports.Count == 9 && ports.Select(m => m.Id).Distinct().Count() == 9, "reorganized manifest lists nine distinct ports");
+    Check(ports.All(m => m.Id.Split('/').Length == 3 && File.Exists(SafePaths.Under(Path.GetDirectoryName(manifestPath)!, m.NotesPath))),
+        "all reorganized port notes exist under their game/map folders");
+    if (args.Contains("--live-ports"))
+    {
+        using var livePorts = new RepositoryClient();
+        var portRoot = Fixture("live-ports");
+        using var portStore = new MapStore(portRoot, livePorts);
+        foreach (var port in ports)
+        {
+            Console.WriteLine("Installing live port: " + port.Id);
+            await portStore.EnableAsync(port, true, null, default);
+            Check(port.Files.All(f => Hashing.GitBlob(SafePaths.Under(portRoot, f.Destination)) == f.Hash),
+                "real playable/source/dependency bytes match manifest: " + port.Name);
+        }
+        foreach (var port in ports)
+        {
+            await portStore.DisableAsync(port, default);
+            Check(port.Files.Where(f => port.IsActivationFile(f.Destination)).All(f => !File.Exists(SafePaths.Under(portRoot, f.Destination))),
+                "real port disables playable/source/menu files: " + port.Name);
+            Check(ports.Where(p => p.Id != port.Id).All(p => portStore.Status(p) == "Enabled"),
+                "disabling one port preserves all other ports: " + port.Name);
+            await portStore.RestoreDisabledAsync(port, default);
+            Check(port.Files.All(f => Hashing.GitBlob(SafePaths.Under(portRoot, f.Destination)) == f.Hash),
+                "real port restores every file: " + port.Name);
+        }
+        Check(portStore.State.Installed.Count == ports.Count, "all nine live ports have independent installation records");
+    }
+}
+if (args.Contains("--live-port-notes"))
+{
+    using var published = new RepositoryClient();
+    var publishedPorts = (await published.FetchCatalogAsync(default)).Maps.Where(m => m.IsPort).ToList();
+    Check(publishedPorts.Count == 9 && publishedPorts.All(m => m.Id.Split('/').Length == 3 && m.NotesPath == m.Id + "/README.md"),
+        "published catalog uses game/map identities and notes paths for all nine ports");
+    foreach (var port in publishedPorts)
+        Check((await published.NotesAsync(port, default)).StartsWith("# "), "published port notes load: " + port.Name);
+}
 Check(JsonSerializer.Deserialize<Catalog>("{\"Commit\":\"old\",\"CheckedAt\":\"2026-01-01T00:00:00Z\",\"Maps\":[]}")!.AssetPacks.Count == 0, "old saved catalogs load with an empty asset library");
 if (treeArg >= 0)
 {
