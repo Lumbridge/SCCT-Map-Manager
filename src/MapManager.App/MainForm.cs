@@ -207,12 +207,9 @@ public sealed class MainForm : Form
     private async Task PromptUpdateAsync(AppRelease release)
     {
         if (busy) { MessageBox.Show(this, "Finish the current map operation before updating.", "Update", MessageBoxButtons.OK, MessageBoxIcon.Information);return; }
-        var releaseNotes = release.Notes.Trim();
-        if (releaseNotes.Length > 900) releaseNotes = releaseNotes[..900] + "…";
         var executable = Program.UpdatableExecutable;
-        var question = $"SCCT Map Manager {release.Tag} is available. You have {AppVersion}.\n\n{releaseNotes}\n\n" +
-            (executable != null ? "Download it and restart now? Your maps and settings are kept." : "Open the download page?");
-        if (MessageBox.Show(this, question, "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+        using (var dialog = new UpdateDialog(release, AppVersion, executable != null))
+            if (dialog.ShowDialog(this) != DialogResult.Yes) return;
         if (executable == null || updater == null) { Open(release.PageUrl);return; }
         var staged = AppUpdater.DownloadPath(executable);
         if (!await Run("Downloading SCCT Map Manager " + release.Tag, ct => updater.DownloadAsync(release, staged, Reporter(), ct), "Update stopped") || closing) return;
