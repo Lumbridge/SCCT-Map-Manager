@@ -8,8 +8,9 @@ internal static class Program
     public static Version Version { get; } = typeof(Program).Assembly.GetName().Version ?? new Version(0, 0, 0);
     public static string VersionText => "v" + Version.ToString(3);
     // Only the published single-file build can replace itself; development builds open the release page instead.
+    // Framework-dependent builds keep the app DLL beside a small launcher; the single-file EXE has none.
     public static string? UpdatableExecutable =>
-        string.IsNullOrEmpty(typeof(Program).Assembly.Location) && Environment.ProcessPath is { } path ? path : null;
+        Environment.ProcessPath is { } path && !File.Exists(Path.Combine(AppContext.BaseDirectory, Path.ChangeExtension(AppUpdater.ExeName, ".dll"))) ? path : null;
 
     [STAThread]
     static void Main(string[] args)
