@@ -127,7 +127,9 @@ public sealed class MainForm : Form
         source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 4);
         var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.Add(enable);mapActions.Controls.Add(disable);mapActions.Controls.Add(download);details.Controls.Add(mapActions, 0, 5);
         var notesTitle = new Label { Text = "MAP NOTES & DEPENDENCIES", UseMnemonic = false, Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 8, 0, 10) };details.Controls.Add(notesTitle, 0, 6);details.Controls.Add(notes, 0, 7);
+        details.AutoScroll = true;details.SizeChanged += (_, _) => FitNotes();
         split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 2);
+        this.details = details;
         var libraryFooter = Table(1, 100);libraryFooter.Padding = new Padding(0, 12, 0, 8);libraryFooter.Controls.Add(count, 0, 0);libraryFooter.Controls.Add(catalogStatus, 0, 1);
         outer.Controls.Add(libraryFooter, 0, 3);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 2, Margin = Padding.Empty };
@@ -139,6 +141,18 @@ public sealed class MainForm : Form
         footer.Controls.Add(operationStatus, 0, 0);footer.Controls.Add(cancel, 1, 0);
         footer.Controls.Add(progress, 0, 1);footer.SetColumnSpan(progress, 2);outer.Controls.Add(footer, 0, 4);
         operationStatus.Text = "Choose a map to download, enable or disable.";
+    }
+    private TableLayoutPanel? details;
+    // Keep the notes readable in short windows: give them a minimum height and let the details panel scroll instead.
+    private void FitNotes()
+    {
+        if (details == null || details.RowStyles.Count < 8 || !details.IsHandleCreated) return;
+        var heights = details.GetRowHeights();
+        if (heights.Length < 8) return;
+        int minimum = LogicalToDeviceUnits(240), available = details.ClientSize.Height - details.Padding.Vertical - heights.Take(7).Sum();
+        var style = details.RowStyles[7];
+        if (available < minimum && style.SizeType != SizeType.Absolute) { style.SizeType = SizeType.Absolute;style.Height = minimum; }
+        else if (available >= minimum && style.SizeType == SizeType.Absolute) { style.SizeType = SizeType.Percent;style.Height = 100;details.AutoScrollPosition = Point.Empty; }
     }
     private void WireEvents()
     {
@@ -165,7 +179,7 @@ public sealed class MainForm : Form
             });
         };
         disable.Click += async (_, _) => { if (Selected is { } map) await Run("Disabling " + map.Name, ct => store.DisableAsync(map, ct)); };
-        notes.LinkClicked += (_, e) => { if (Uri.TryCreate(e.LinkText, UriKind.Absolute, out var uri) && uri.Scheme == "https") Open(uri.AbsoluteUri); };
+        MarkdownView.EnableLinks(notes);
         folder.Click += (_, _) =>
         {
             using var picker = new FolderBrowserDialog { Description = "Choose an SCCT Versus installation", UseDescriptionForTitle = true, SelectedPath = store.GameRoot };
@@ -385,17 +399,18 @@ public sealed class MainForm : Form
         notesCancel?.Cancel();notesCancel?.Dispose();notesCancel = new CancellationTokenSource();var ct = notesCancel.Token;
         var map = Selected;var chosen = Chosen;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
         version.Enabled = version.Items.Count > 1 && !busy;
-        if (map == null || chosen == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";notes.Clear();source.Enabled = false;return; }
+        if (map == null || chosen == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");source.Enabled = false;return; }
         mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {chosen.Version}\n{chosen.Packages}  •  {SizeText(chosen.Bytes)}  •  {chosen.Files.Count} files";
         summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nDisabling keeps shared assets installed.";
         source.Enabled = chosen.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
         bool chosenInstalled = installed?.Entry.Fingerprint == chosen.Fingerprint, latest = chosen.Fingerprint == map.Fingerprint;
         enable.Text = installed?.Enabled == true ? (chosenInstalled ? "Repair / enable" : "Switch to " + VersionName(chosen)) : "Enable map";
         download.Text = latest ? (store.HasUpdate(map) ? "Download update" : "Download map") : "Download " + VersionName(chosen);
-        notes.Text = "Loading map notes…";
-        try { var text = await repository.NotesAsync(chosen, ct);if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = text; }
+        details?.PerformLayout();FitNotes();
+        MarkdownView.Render(notes, "Loading map notes…");
+        try { var text = await repository.NotesAsync(chosen, ct);if (!ct.IsCancellationRequested && !IsDisposed) MarkdownView.RenderNotes(notes, text, chosen); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception) { if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = "Map notes are unavailable offline. Previously downloaded maps can still be enabled.\n\n" + RepositoryClient.RepositoryUrl; }
+        catch (Exception) { if (!ct.IsCancellationRequested && !IsDisposed) MarkdownView.Render(notes, "Map notes are unavailable offline. Previously downloaded maps can still be enabled.\n\n" + RepositoryClient.RepositoryUrl); }
     }
     private static string SizeText(long bytes) => bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024.0 * 1024 * 1024):0.0} GB" : $"{bytes / (1024.0 * 1024):0.0} MB";
     public async Task<string> SmokeAsync(string? artifact = null)
@@ -419,6 +434,8 @@ public sealed class MainForm : Form
         if (Chosen?.Version == Selected?.Version || !metadata.Text.Contains(Chosen!.Version) || !download.Text.StartsWith("Download v"))
             throw new InvalidOperationException("Choosing an older version did not update the details panel.");
         var oldest = Chosen.Version;version.SelectedIndex = 0;await NotesLoad;
+        if (!notes.Text.StartsWith("Map notes are unavailable") && (notes.Text.Contains("**") || notes.Text.Contains("](") || notes.Text.Contains("| ---") || notes.Text.TrimStart().StartsWith('#')))
+            throw new InvalidOperationException("Map notes still show raw markdown.");
         if (artifact != null)
         {
             Directory.CreateDirectory(artifact);

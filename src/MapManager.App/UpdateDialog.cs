@@ -22,7 +22,6 @@ public sealed class UpdateDialog : Form
         // Render once fonts and DPI scaling have settled: a RichTextBox font change resets all character formatting.
         Shown += (_, _) => MarkdownView.Render(notes, string.IsNullOrWhiteSpace(release.Notes) ? "No release notes were supplied." : release.Notes);
         MarkdownView.EnableLinks(notes);
-        notes.LinkClicked += (_, e) => { if (Uri.TryCreate(e.LinkText, UriKind.Absolute, out var uri) && uri.Scheme == "https") System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }); };
         var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, FlowDirection = FlowDirection.RightToLeft, Margin = Padding.Empty };
         var accept = new Button { Text = canSelfUpdate ? "Update and restart" : "Open download page", DialogResult = DialogResult.Yes, AutoSize = true, MinimumSize = new Size(150, 36),
             FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(0, 104, 118), ForeColor = Color.White, Margin = new Padding(8, 0, 0, 0) };

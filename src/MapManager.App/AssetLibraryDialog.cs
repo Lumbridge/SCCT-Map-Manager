@@ -49,6 +49,7 @@ public sealed class AssetLibraryDialog : Form
         layout.Controls.Add(status, 0, 6);Controls.Add(layout);
         search.TextChanged += (_, _) => Fill();filter.SelectedIndexChanged += (_, _) => Fill();
         grid.SelectionChanged += async (_, _) => await ShowDetails();
+        details.DetectUrls = true;MarkdownView.EnableLinks(details);
         refresh.Click += async (_, _) => await Run(ct => store.RefreshAsync(ct));
         install.Click += async (_, _) => { if (Selected is { } pack) await Run(ct => store.EnableAsync(pack, false, Reporter(), ct)); };
         download.Click += async (_, _) => { if (Selected is { } pack) await Run(ct => store.DownloadAsync(pack, false, Reporter(), ct)); };
@@ -81,16 +82,17 @@ public sealed class AssetLibraryDialog : Form
     {
         notesOperation?.Cancel();notesOperation?.Dispose();notesOperation = new CancellationTokenSource();var ct = notesOperation.Token;
         var pack = Selected;install.Enabled = download.Enabled = pack != null && !busy;
-        if (pack == null) { details.Text = "Published texture and static mesh packs appear here. Maps remain in the main library.";return; }
+        if (pack == null) { MarkdownView.Render(details, "Published texture and static mesh packs appear here. Maps remain in the main library.");return; }
         install.Text = store.HasUpdate(pack) ? "Update installed pack" : "Download + install";
         if (!store.State.Installed.ContainsKey(pack.Id)) install.Text = "Download + install";
         var cached = store.State.Downloads.GetValueOrDefault(pack.Id);
-        var heading = $"{pack.Name} • {pack.Version} • {pack.Bytes / (1024d * 1024):0.0} MB\n" +
-            (cached != null ? $"Downloaded: {cached.Version}\n" : "") + string.Join("\n", pack.Files.Select(f => f.Destination)) + "\n\n";
-        details.Text = heading + "Loading release notes…";
-        try { var notes = await repository.NotesAsync(pack, ct);if (!ct.IsCancellationRequested && !IsDisposed) details.Text = heading + notes; }
+        var heading = $"**{pack.Name}** • {pack.Version} • {pack.Bytes / (1024d * 1024):0.0} MB\n\n" +
+            (cached != null ? $"Downloaded: {cached.Version}\n\n" : "") + string.Join("\n", pack.Files.Select(f => $"- `{f.Destination}`")) + "\n\n";
+        MarkdownView.Render(details, heading + "Loading release notes…");
+        try { var notes = await repository.NotesAsync(pack, ct);if (!ct.IsCancellationRequested && !IsDisposed) { if (pack.NotesPath.EndsWith(".txt", StringComparison.OrdinalIgnoreCase)) MarkdownView.Render(details, heading, plainSuffix: notes);
+              else MarkdownView.Render(details, heading + notes, MarkdownView.NotesBase(pack)); } }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch { if (!ct.IsCancellationRequested && !IsDisposed) details.Text = heading + "Release notes are unavailable offline. Downloaded packs can still be installed."; }
+        catch { if (!ct.IsCancellationRequested && !IsDisposed) MarkdownView.Render(details, heading + "Release notes are unavailable offline. Downloaded packs can still be installed."); }
     }
     private IProgress<TransferProgress> Reporter() => new Progress<TransferProgress>(p =>
     {
