@@ -10,13 +10,16 @@ Download, enable and update maps for **Splinter Cell: Chaos Theory Versus** from
 2. Put **SCCT Map Manager.exe** in your game's `System` folder.
 3. Run it from there.
 
-Needs Windows 10/11 (64-bit) and Enhanced SCCT Versus 3.6. To update the manager, close it and replace the EXE.
+Needs Windows 10/11 (64-bit) and Enhanced SCCT Versus 3.6.
+
+The manager checks for new versions when it starts. When one is available, an **Update to vX.Y.Z** button appears in the menu bar; it downloads the new EXE, verifies its checksum, replaces itself and restarts. **Help → Check for updates** checks on demand. If the game is in a protected folder such as `Program Files`, Windows may block the replacement; download the new EXE from the releases page instead.
 
 ## Using it
 
 - Pick a map from the list (search or filter by collection) and press **Enable map**. It downloads, verifies and installs the map.
 - **Disable map** takes it out of play; enable it again any time.
 - **Download map** just saves it for later, or updates an installed map.
+- Use **Version** to choose an older release of a map, for example to match a server. Enable or download installs that version; the list shows the newest version and the one you have.
 - Tick **Include editable source maps** if you also want the editor (`MapsEd`) files.
 - **Change folder** switches to another game installation.
 

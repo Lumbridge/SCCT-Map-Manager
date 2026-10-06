@@ -5,6 +5,12 @@ namespace MapManager.App;
 
 internal static class Program
 {
+    public static Version Version { get; } = typeof(Program).Assembly.GetName().Version ?? new Version(0, 0, 0);
+    public static string VersionText => "v" + Version.ToString(3);
+    // Only the published single-file build can replace itself; development builds open the release page instead.
+    public static string? UpdatableExecutable =>
+        string.IsNullOrEmpty(typeof(Program).Assembly.Location) && Environment.ProcessPath is { } path ? path : null;
+
     [STAThread]
     static void Main(string[] args)
     {
@@ -12,6 +18,14 @@ internal static class Program
         Application.ThreadException += (_, e) => MessageBox.Show(e.Exception.Message, "SCCT Map Manager", MessageBoxButtons.OK, MessageBoxIcon.Error);
         try
         {
+            // A self-update relaunches before the old process has released the installation lock.
+            var waitIndex = Array.IndexOf(args, "--wait-for-pid");
+            if (waitIndex >= 0 && waitIndex + 1 < args.Length && int.TryParse(args[waitIndex + 1], out var pid))
+            {
+                try { using var previous = Process.GetProcessById(pid);previous.WaitForExit(TimeSpan.FromSeconds(30)); }
+                catch (ArgumentException) { }
+            }
+            if (UpdatableExecutable is { } executable) AppUpdater.CleanUp(executable);
             string? root = null;
             var rootIndex = Array.IndexOf(args, "--root");if (rootIndex >= 0 && rootIndex + 1 < args.Length) root = args[rootIndex + 1];
             root ??= Directory.GetParent(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar))?.FullName;
@@ -21,7 +35,8 @@ internal static class Program
                 if (picker.ShowDialog() != DialogResult.OK) return; root = picker.SelectedPath;
             }
             using var client = new RepositoryClient();
-            using var form = new MainForm(root, client);
+            using var updater = new AppUpdater(Version);
+            using var form = new MainForm(root, client, updater, checkForUpdates: !args.Contains("--ui-smoke") && !args.Contains("--no-update-check"));
             if (args.Contains("--ui-smoke"))
             {
                 var artifact = args.SkipWhile(a => a != "--ui-smoke").Skip(1).FirstOrDefault();

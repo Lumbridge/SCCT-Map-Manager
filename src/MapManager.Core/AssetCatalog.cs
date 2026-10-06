@@ -6,7 +6,9 @@ namespace MapManager.Core;
 // Large packages live on versioned GitHub releases; the pinned manifest supplies their exact blob hashes.
 public static class AssetCatalog
 {
-    public static List<MapEntry> Parse(string json, string commit)
+    public static List<MapEntry> Parse(string json, string commit) => ParseAll(json, commit).Select(g => g[0]).ToList();
+    // Every release per ID, newest first.
+    public static List<List<MapEntry>> ParseAll(string json, string commit)
     {
         CatalogParser.ValidateHash(commit);
         var entries = JsonSerializer.Deserialize<List<MapEntry>>(json) ?? throw new InvalidDataException("Invalid asset catalog.");
@@ -30,6 +32,7 @@ public static class AssetCatalog
                     throw new InvalidDataException("Invalid asset download.");
             }
         }
-        return entries.Select(PortLayout.Normalize).GroupBy(p => p.Id).Select(g => g.OrderByDescending(p => Version.Parse(p.Version[1..])).First() with { Commit = commit }).ToList();
+        return entries.Select(PortLayout.Normalize).GroupBy(p => p.Id)
+            .Select(g => g.OrderByDescending(p => Version.Parse(p.Version[1..])).DistinctBy(p => p.Version).Select(p => p with { Commit = commit }).ToList()).ToList();
     }
 }

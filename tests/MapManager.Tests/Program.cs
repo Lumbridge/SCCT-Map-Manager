@@ -298,6 +298,72 @@ if (args.Contains("--live-port-notes"))
         Check((await published.NotesAsync(port, default)).StartsWith("# "), "published port notes load: " + port.Name);
 }
 Check(JsonSerializer.Deserialize<Catalog>("{\"Commit\":\"old\",\"CheckedAt\":\"2026-01-01T00:00:00Z\",\"Maps\":[]}")!.AssetPacks.Count == 0, "old saved catalogs load with an empty asset library");
+
+// Version selection
+var versionTree = new System.Text.Json.Nodes.JsonObject { ["sha"] = a.Commit, ["truncated"] = false, ["tree"] = new System.Text.Json.Nodes.JsonArray() };
+var blobHashes = new Dictionary<string, string> { ["v1"] = new string('1', 40), ["v1.1"] = new string('2', 40), ["v2"] = new string('3', 40) };
+foreach (var (folder, hash) in blobHashes)
+    versionTree["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = $"release/ShipD/{folder}/Packages/Maps/ShipD.sdc", ["type"] = "blob", ["sha"] = hash, ["size"] = 10 });
+versionTree["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = "release/ShipD/v1/README.md", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 10 });
+var versionCatalog = CatalogParser.Parse(versionTree.ToJsonString());
+var shipD = versionCatalog.Maps.Single();
+Check(shipD.Version == "v2" && versionCatalog.VersionsOf(shipD).Select(v => v.Version).SequenceEqual(new[] { "v2", "v1.1", "v1" }), "catalog keeps every original release, newest first");
+Check(versionCatalog.VersionsOf(shipD).Last().NotesPath == "release/ShipD/v1/README.md" && versionCatalog.VersionsOf(shipD).All(v => v.Id == shipD.Id && v.Category == CatalogPresentation.JpMaps),
+    "older versions keep their own notes and share the map identity");
+Check(versionCatalog.VersionsOf(b).Single() == b, "maps without older releases offer a single version");
+var savedVersions = JsonSerializer.Deserialize<Catalog>(JsonSerializer.Serialize(versionCatalog))!;
+Check(savedVersions.VersionsOf(shipD).Count == 3, "saved catalogs remember older versions for offline selection");
+var releasedVersions = AssetCatalog.ParseAll(manifest, a.Commit).Single();
+Check(releasedVersions.Select(v => v.Version).SequenceEqual(new[] { "v1.10.0", "v1.0.0" }), "release catalog keeps older pack and port versions");
+var legacyVersions = PortLayout.Normalize(new Catalog(a.Commit, DateTimeOffset.UtcNow, []) { Versions = new() { ["ports/rainbow-six-vegas"] = [casino with { Id = "ports/rainbow-six-vegas" }] } });
+Check(legacyVersions.Versions.ContainsKey(casino.Id), "legacy port version lists migrate to game/map identities");
+
+var pickRoot = Fixture("version-pick");
+using (var store = new MapStore(pickRoot, client))
+{
+    await store.EnableAsync(a, false, null, default);
+    Check(store.HasUpdate(update) && store.Status(update).Contains("update available"), "an older chosen version reports the newer release");
+    await store.DownloadAsync(update, false, null, default);
+    Check(Read(pickRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2", "choosing the newest version upgrades an enabled map");
+    await store.EnableAsync(a, false, null, default);
+    Check(Read(pickRoot, "Packages/Maps/Alpha.sdc") == "alpha-v1" && store.State.Installed[a.Id].Entry.Fingerprint == a.Fingerprint && store.State.Installed[a.Id].Enabled,
+        "choosing an older version downgrades an enabled map");
+    await store.DisableAsync(a, default);
+    await store.EnableAsync(update, false, null, default);
+    Check(Read(pickRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2", "a disabled map can be enabled at a different version");
+}
+
+// Self-updater
+string ReleaseJson(string tag, string exeUrl, string? digest = null, bool sums = true, bool prerelease = false)
+{
+    var assets = new System.Text.Json.Nodes.JsonArray();
+    var exe = new System.Text.Json.Nodes.JsonObject { ["name"] = AppUpdater.ExeAsset, ["size"] = 4, ["browser_download_url"] = exeUrl };
+    if (digest != null) exe["digest"] = digest;
+    assets.Add(exe);
+    if (sums) assets.Add(new System.Text.Json.Nodes.JsonObject { ["name"] = "SHA256SUMS.txt", ["size"] = 87, ["browser_download_url"] = $"{AppUpdater.ReleasesUrl}/download/{tag}/SHA256SUMS.txt" });
+    return new System.Text.Json.Nodes.JsonObject { ["tag_name"] = tag, ["draft"] = false, ["prerelease"] = prerelease, ["body"] = "Notes", ["html_url"] = $"{AppUpdater.ReleasesUrl}/tag/{tag}", ["assets"] = assets }.ToJsonString();
+}
+var current = new Version(0, 4, 5, 0);
+var newer = AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"{AppUpdater.ReleasesUrl}/download/v0.5.0/{AppUpdater.ExeAsset}", "sha256:" + new string('A', 64)), current);
+Check(newer?.Version == new Version(0, 5, 0) && newer.Sha256 == new string('a', 64), "updater finds a newer release and its published digest");
+Check(AppUpdater.ParseLatest(ReleaseJson("v0.4.5", $"{AppUpdater.ReleasesUrl}/download/v0.4.5/{AppUpdater.ExeAsset}"), current) == null, "updater ignores the running version");
+Check(AppUpdater.ParseLatest(ReleaseJson("v0.4.4", $"{AppUpdater.ReleasesUrl}/download/v0.4.4/{AppUpdater.ExeAsset}"), current) == null, "updater never downgrades");
+Check(AppUpdater.ParseLatest(ReleaseJson("v0.6.0", $"{AppUpdater.ReleasesUrl}/download/v0.6.0/{AppUpdater.ExeAsset}", prerelease: true), current) == null, "updater skips prereleases");
+Check(AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"{AppUpdater.ReleasesUrl}/download/v0.5.0/{AppUpdater.ExeAsset}"), current)?.ChecksumsUrl != null, "updater falls back to SHA256SUMS.txt");
+await Reject(() => { AppUpdater.ParseLatest(ReleaseJson("v0.5.0", "https://example.com/SCCT.Map.Manager.exe"), current);return Task.CompletedTask; }, "updater rejects downloads outside the project's releases");
+await Reject(() => { AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"{AppUpdater.ReleasesUrl}/download/../../../evil/x.exe"), current);return Task.CompletedTask; }, "updater rejects release paths that escape the project");
+await Reject(() => { AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"{AppUpdater.ReleasesUrl}/download/v0.5.0/{AppUpdater.ExeAsset}", sums: false), current);return Task.CompletedTask; }, "updater refuses releases it cannot verify");
+Check(AppUpdater.ChecksumFromList(new string('B', 64) + "  SCCT Map Manager.exe\n") == new string('b', 64) && AppUpdater.ChecksumFromList(new string('B', 64) + "  other.exe\n") == null,
+    "updater reads the manager's entry from SHA256SUMS.txt");
+var updateRoot = Path.Combine(output, "self-update");Directory.CreateDirectory(updateRoot);
+var exePath = Path.Combine(updateRoot, AppUpdater.ExeName);
+File.WriteAllText(exePath, "old build");File.WriteAllText(AppUpdater.DownloadPath(exePath), "new build");
+AppUpdater.Install(AppUpdater.DownloadPath(exePath), exePath);
+Check(File.ReadAllText(exePath) == "new build" && File.ReadAllText(AppUpdater.PreviousPath(exePath)) == "old build", "update swaps in the new build and keeps the old one aside");
+AppUpdater.CleanUp(exePath);
+Check(!File.Exists(AppUpdater.PreviousPath(exePath)) && !File.Exists(AppUpdater.DownloadPath(exePath)), "next launch removes update leftovers");
+await Reject(() => { AppUpdater.Install(AppUpdater.DownloadPath(exePath), exePath);return Task.CompletedTask; }, "a missing download fails the swap");
+Check(File.ReadAllText(exePath) == "new build", "a failed swap restores the running build");
 if (treeArg >= 0)
 {
     var catalog = CatalogParser.Parse(await File.ReadAllTextAsync(args[treeArg + 1]));

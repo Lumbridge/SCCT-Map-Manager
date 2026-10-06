@@ -26,6 +26,10 @@ public record MapEntry(string Id, string Name, string Category, string Version, 
 public record Catalog(string Commit, DateTimeOffset CheckedAt, List<MapEntry> Maps)
 {
     public List<MapEntry> AssetPacks { get; init; } = [];
+    // Every published version per map ID, newest first. Maps and AssetPacks hold only the newest.
+    public Dictionary<string, List<MapEntry>> Versions { get; init; } = new(StringComparer.Ordinal);
+    public IReadOnlyList<MapEntry> VersionsOf(MapEntry map) =>
+        Versions.TryGetValue(map.Id, out var all) && all.Count > 0 ? all : [map];
 }
 public record TransferProgress(string Message, int Completed, int Total, long Bytes = 0);
 
@@ -77,11 +81,17 @@ public static class CatalogParser
             }
         }
         var maps = new List<MapEntry>();
+        var versions = new Dictionary<string, List<MapEntry>>(StringComparer.Ordinal);
         foreach (var group in roots.GroupBy(r => r.Value.Id))
         {
-            var selected = group.OrderByDescending(r => VersionKey(r.Value.Version), StringComparer.Ordinal).First();
-            var mapRoot = selected.Key;
-            var info = selected.Value;
+            var built = group.OrderByDescending(r => VersionKey(r.Value.Version), StringComparer.Ordinal)
+                .Select(r => BuildMap(r.Key, r.Value)).OfType<MapEntry>().ToList();
+            if (built.Count == 0) continue;
+            maps.Add(built[0]);
+            if (built.Count > 1) versions[built[0].Id] = built;
+        }
+        MapEntry? BuildMap(string mapRoot, (string Id, string Name, string Category, string Version, string Game) info)
+        {
             var files = new Dictionary<string, MapFile>(StringComparer.OrdinalIgnoreCase);
             void Include(string prefix)
             {
@@ -98,10 +108,10 @@ public static class CatalogParser
             }
             Include(mapRoot);
             if (info.Category == "Community") Include("community/_shared");
-            if (files.Count == 0) continue;
+            if (files.Count == 0) return null;
             var notes = blobs.FirstOrDefault(b => b.Path.Equals(mapRoot + "/README.md", StringComparison.OrdinalIgnoreCase))?.Path
                 ?? blobs.FirstOrDefault(b => b.Path.Equals(mapRoot + "/README.txt", StringComparison.OrdinalIgnoreCase))?.Path ?? mapRoot + "/README.md";
-            maps.Add(PortLayout.Normalize(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()) { Game = info.Game }));
+            return PortLayout.Normalize(new MapEntry(info.Id, info.Name, info.Category, info.Version, commit, notes, files.Values.ToList()) { Game = info.Game });
         }
         if (maps.Count == 0) throw new InvalidDataException("The repository contains no supported maps.");
         var packs = new List<MapEntry>();
@@ -109,8 +119,15 @@ public static class CatalogParser
                 && Regex.IsMatch(b.Path.Split('/')[2], @"^v\d+\.\d+\.\d+$"))
             .GroupBy(b => b.Path.Split('/').ElementAtOrDefault(1)))
         {
-            var group = pack.GroupBy(b => b.Path.Split('/')[2]).OrderByDescending(g => Version.Parse(g.Key[1..])).First();
-            var prefix = "assets/" + pack.Key + "/" + group.Key;
+            var built = pack.GroupBy(b => b.Path.Split('/')[2]).OrderByDescending(g => Version.Parse(g.Key[1..]))
+                .Select(g => BuildPack(pack.Key!, g)).OfType<MapEntry>().ToList();
+            if (built.Count == 0) continue;
+            packs.Add(built[0]);
+            if (built.Count > 1) versions[built[0].Id] = built;
+        }
+        MapEntry? BuildPack(string name, IGrouping<string, Blob> group)
+        {
+            var prefix = "assets/" + name + "/" + group.Key;
             var files = new Dictionary<string, MapFile>(StringComparer.OrdinalIgnoreCase);
             foreach (var blob in group)
             {
@@ -122,13 +139,13 @@ public static class CatalogParser
                 if (!files.TryAdd(destination, new MapFile(blob.Path, destination, blob.Hash, blob.Size)))
                     throw new InvalidDataException("Duplicate asset destination: " + destination);
             }
-            if (files.Count == 0) continue;
+            if (files.Count == 0) return null;
             var notes = group.FirstOrDefault(b => b.Path.Equals(prefix + "/README.md", StringComparison.OrdinalIgnoreCase)
                 || b.Path.Equals(prefix + "/README.txt", StringComparison.OrdinalIgnoreCase))?.Path ?? prefix + "/README.md";
-            packs.Add(new MapEntry("assets/" + pack.Key, pack.Key!, "Editor assets", group.Key, commit, notes, files.Values.ToList()));
+            return new MapEntry("assets/" + name, name, "Editor assets", group.Key, commit, notes, files.Values.ToList());
         }
         return new Catalog(commit, DateTimeOffset.UtcNow, CatalogPresentation.Order(maps).ToList())
-        { AssetPacks = packs.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList() };
+        { AssetPacks = packs.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList(), Versions = versions };
     }
     private static string VersionKey(string value) => Regex.Replace(value.TrimStart('v', 'V'), @"\d+", m => m.Value.PadLeft(10, '0'));
     private static string Humanize(string value) => string.Join(' ', value.Split('-', StringSplitOptions.RemoveEmptyEntries).Select(part => part.Length == 0 ? part : char.ToUpperInvariant(part[0]) + part[1..]));

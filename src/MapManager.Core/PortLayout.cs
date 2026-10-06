@@ -19,5 +19,10 @@ public static class PortLayout
 
     // Keep source and notes paths pinned to their original commit, including saved offline catalogs.
     public static MapEntry Normalize(MapEntry map) => map with { Id = CanonicalId(map.Id) };
-    public static Catalog Normalize(Catalog catalog) => catalog with { Maps = catalog.Maps.Select(Normalize).ToList() };
+    public static Catalog Normalize(Catalog catalog) => catalog with
+    {
+        Maps = catalog.Maps.Select(Normalize).ToList(),
+        Versions = (catalog.Versions ?? new Dictionary<string, List<MapEntry>>()).GroupBy(p => CanonicalId(p.Key))
+            .ToDictionary(g => g.Key, g => g.First().Value.Select(Normalize).ToList(), StringComparer.Ordinal)
+    };
 }

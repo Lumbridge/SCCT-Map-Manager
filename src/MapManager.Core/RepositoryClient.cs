@@ -30,14 +30,19 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         if (assets.StatusCode != HttpStatusCode.NotFound)
         {
             assets.EnsureSuccessStatusCode();
-            var packs = AssetCatalog.Parse(await assets.Content.ReadAsStringAsync(timeout.Token), catalog.Commit);
+            var released = AssetCatalog.ParseAll(await assets.Content.ReadAsStringAsync(timeout.Token), catalog.Commit);
+            var packs = released.Select(v => v[0]).ToList();
+            var versions = new Dictionary<string, List<MapEntry>>(catalog.Versions, StringComparer.Ordinal);
+            // Release entries take precedence over same-ID tree entries, so their version lists must too.
+            foreach (var all in released) { if (all.Count > 1) versions[all[0].Id] = all; else versions.Remove(all[0].Id); }
             var recoveredAssets = catalog.Maps.Where(m => m.Category == "Recovered")
                 .Select(m => new MapEntry("assets/recovered-" + Slug(m.Name), m.Name + " assets", "Editor assets", "v1.0.0", m.Commit,
                     m.NotesPath, m.Files.Where(f => SafePaths.IsEditorAsset(f.Destination)).ToList()))
                 .Where(p => p.Files.Count > 0);
             catalog = catalog with {
                 Maps = CatalogPresentation.Order(catalog.Maps.Concat(packs.Where(p => p.IsPort))).ToList(),
-                AssetPacks = packs.Where(p => p.IsAssetPack).Concat(catalog.AssetPacks).Concat(recoveredAssets).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList() };
+                AssetPacks = packs.Where(p => p.IsAssetPack).Concat(catalog.AssetPacks).Concat(recoveredAssets).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList(),
+                Versions = versions };
         }
         return catalog;
         }

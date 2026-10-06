@@ -5,9 +5,15 @@ namespace MapManager.App;
 
 public sealed class MainForm : Form
 {
-    private const string AppVersion = "v0.4.5";
+    private static readonly string AppVersion = Program.VersionText;
     private static readonly Color Ink = Color.FromArgb(28, 39, 54), Accent = Color.FromArgb(0, 104, 118), Pale = Color.FromArgb(241, 245, 249);
     private readonly IRepositoryClient repository;
+    private readonly AppUpdater? updater;
+    private readonly ToolStripMenuItem updateItem = new() { Visible = false, Alignment = ToolStripItemAlignment.Right, ForeColor = Color.White, BackColor = Accent };
+    private AppRelease? availableUpdate;
+    private readonly ComboBox version = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240, Margin = new Padding(0, 0, 0, 12) };
+    private bool fillingVersions;
+    private sealed record VersionChoice(MapEntry Entry, string Label) { public override string ToString() => Label; }
     private MapStore store;
     private readonly TextBox search = new() { PlaceholderText = "Search maps or package names", Dock = DockStyle.Fill };
     private readonly ComboBox category = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
@@ -35,10 +41,12 @@ public sealed class MainForm : Form
     public int VisibleMapCount => grid.Rows.Count;
     public string CatalogStatus => catalogStatus.Text;
     private MapEntry? Selected => grid.CurrentRow?.Tag as MapEntry;
+    // The version picked in the details panel; download and enable act on this rather than always the newest.
+    private MapEntry? Chosen => (version.SelectedItem as VersionChoice)?.Entry is { } entry && entry.Id == Selected?.Id ? entry : Selected;
 
-    public MainForm(string root, IRepositoryClient repository)
+    public MainForm(string root, IRepositoryClient repository, AppUpdater? updater = null, bool checkForUpdates = false)
     {
-        this.repository = repository;store = new MapStore(root, repository, () => Program.GuardGame(root));
+        this.repository = repository;this.updater = updater;store = new MapStore(root, repository, () => Program.GuardGame(root));
         SeedCatalog();
         Text = $"SCCT Map Manager {AppVersion}";Font = new Font("Segoe UI", 10);ForeColor = Ink;BackColor = Pale;
         AutoScaleDimensions = new SizeF(96, 96);AutoScaleMode = AutoScaleMode.Dpi;MinimumSize = new Size(1050, 800);Size = new Size(1280, 900);StartPosition = FormStartPosition.CenterScreen;
@@ -48,9 +56,23 @@ public sealed class MainForm : Form
         var assets = new ToolStripMenuItem("Textures & static meshes…");
         assets.Click += (_, _) => { using var dialog = new AssetLibraryDialog(store, repository);dialog.ShowDialog(this);FillMaps(); };
         tools.DropDownOpening += (_, _) => assets.Enabled = !busy;
-        tools.DropDownItems.Add(assets);toolsMenu.Items.Add(tools);Controls.Add(toolsMenu);MainMenuStrip = toolsMenu;
+        tools.DropDownItems.Add(assets);toolsMenu.Items.Add(tools);
+        var help = new ToolStripMenuItem("Help");
+        var checkUpdates = new ToolStripMenuItem("Check for updates…");
+        checkUpdates.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
+        var releases = new ToolStripMenuItem("Release history");
+        releases.Click += (_, _) => Open(AppUpdater.ReleasesUrl);
+        help.DropDownOpening += (_, _) => checkUpdates.Enabled = !busy && updater != null;
+        help.DropDownItems.Add(checkUpdates);help.DropDownItems.Add(releases);toolsMenu.Items.Add(help);
+        updateItem.Click += async (_, _) => { if (availableUpdate is { } release) await PromptUpdateAsync(release); };
+        toolsMenu.Items.Add(updateItem);
+        Controls.Add(toolsMenu);MainMenuStrip = toolsMenu;
         target.Text = store.GameRoot;FillMaps();
-        Shown += async (_, _) => { try { await Run("Checking the map catalog…", ct => store.RefreshAsync(ct)); } finally { initial.TrySetResult(); } };
+        Shown += async (_, _) =>
+        {
+            try { await Run("Checking the map catalog…", ct => store.RefreshAsync(ct)); } finally { initial.TrySetResult(); }
+            if (checkForUpdates) await CheckForUpdatesAsync(manual: false);
+        };
     }
     private static Button Button(string text, bool primary = false) => new()
     {
@@ -97,12 +119,14 @@ public sealed class MainForm : Form
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 145, FillWeight = 110 });
         foreach (DataGridViewColumn column in grid.Columns) column.SortMode = DataGridViewColumnSortMode.Programmatic;
         split.Panel1.Controls.Add(grid);
-        var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 7, BackColor = Color.White, Padding = new Padding(18) };
-        for (int i = 0; i < 6; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, BackColor = Color.White, Padding = new Padding(18) };
+        for (int i = 0; i < 7; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         details.Controls.Add(mapName, 0, 0);details.Controls.Add(metadata, 0, 1);summary.Margin = new Padding(0, 14, 0, 14);details.Controls.Add(summary, 0, 2);
-        source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 3);
-        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.Add(enable);mapActions.Controls.Add(disable);mapActions.Controls.Add(download);details.Controls.Add(mapActions, 0, 4);
-        var notesTitle = new Label { Text = "MAP NOTES & DEPENDENCIES", UseMnemonic = false, Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 8, 0, 10) };details.Controls.Add(notesTitle, 0, 5);details.Controls.Add(notes, 0, 6);
+        var versionRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+        versionRow.Controls.Add(new Label { Text = "Version", AutoSize = true, Margin = new Padding(0, 6, 10, 0) });versionRow.Controls.Add(version);details.Controls.Add(versionRow, 0, 3);
+        source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 4);
+        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.Add(enable);mapActions.Controls.Add(disable);mapActions.Controls.Add(download);details.Controls.Add(mapActions, 0, 5);
+        var notesTitle = new Label { Text = "MAP NOTES & DEPENDENCIES", UseMnemonic = false, Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 8, 0, 10) };details.Controls.Add(notesTitle, 0, 6);details.Controls.Add(notes, 0, 7);
         split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 2);
         var libraryFooter = Table(1, 100);libraryFooter.Padding = new Padding(0, 12, 0, 8);libraryFooter.Controls.Add(count, 0, 0);libraryFooter.Controls.Add(catalogStatus, 0, 1);
         outer.Controls.Add(libraryFooter, 0, 3);
@@ -122,18 +146,20 @@ public sealed class MainForm : Form
         grid.CellPainting += PaintPinnedMap;
         grid.ColumnHeaderMouseClick += (_, e) => SortRows(e.ColumnIndex);
         grid.SelectionChanged += (_, _) => NotesLoad = Detail();
+        version.SelectedIndexChanged += (_, _) => { if (!fillingVersions) NotesLoad = VersionDetail(); };
         refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
         backups.Click += (_, _) => { var path = SafePaths.Under(store.DataRoot, "Backups");Directory.CreateDirectory(path);Open(path); };
         cancel.Click += (_, _) => { operation?.Cancel();cancel.Enabled = false;cancel.Text = "Cancelling…"; };
-        download.Click += async (_, _) => { if (Selected is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => store.DownloadAsync(map, include, Reporter(), ct)); } };
+        download.Click += async (_, _) => { if (Chosen is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => store.DownloadAsync(map, include, Reporter(), ct)); } };
         enable.Click += async (_, _) =>
         {
-            if (Selected is not { } map) return;bool include = source.Checked;
+            if (Chosen is not { } map) return;bool include = source.Checked;
             await Run("Enabling " + map.Name, async ct =>
             {
-                if (store.State.Installed.TryGetValue(map.Id, out var installed) && !installed.Enabled &&
-                    (!store.State.Downloads.TryGetValue(map.Id, out var cached) || (!installed.External && cached.Fingerprint == installed.Entry.Fingerprint)))
+                // Re-enable the disabled copy byte for byte when it is the chosen version; otherwise install the chosen version.
+                if (store.State.Installed.TryGetValue(map.Id, out var installed) && !installed.Enabled && installed.Entry.Fingerprint == map.Fingerprint &&
+                    !(installed.External && store.State.Downloads.ContainsKey(map.Id)))
                     await store.RestoreDisabledAsync(map, ct);
                 else await store.EnableAsync(map, include, Reporter(), ct);
             });
@@ -159,6 +185,58 @@ public sealed class MainForm : Form
         FormClosed += (_, _) => { notesCancel?.Dispose();store.Dispose(); };
     }
     private static void Open(string path) => Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+    private async Task CheckForUpdatesAsync(bool manual)
+    {
+        if (updater == null) return;
+        try
+        {
+            var release = await updater.CheckAsync(CancellationToken.None);
+            if (IsDisposed) return;
+            availableUpdate = release;updateItem.Visible = release != null;
+            if (release != null) updateItem.Text = $"Update to {release.Tag}";
+            if (!manual) return;
+            if (release == null) MessageBox.Show(this, $"You have the latest version ({AppVersion}).", "No updates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            else await PromptUpdateAsync(release);
+        }
+        // Background checks stay silent so an offline launch is not interrupted.
+        catch (Exception ex) when (!IsDisposed)
+        {
+            if (manual) MessageBox.Show(this, "Could not check for updates. " + ex.Message, "Update check failed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+    }
+    private async Task PromptUpdateAsync(AppRelease release)
+    {
+        if (busy) { MessageBox.Show(this, "Finish the current map operation before updating.", "Update", MessageBoxButtons.OK, MessageBoxIcon.Information);return; }
+        var releaseNotes = release.Notes.Trim();
+        if (releaseNotes.Length > 900) releaseNotes = releaseNotes[..900] + "…";
+        var executable = Program.UpdatableExecutable;
+        var question = $"SCCT Map Manager {release.Tag} is available. You have {AppVersion}.\n\n{releaseNotes}\n\n" +
+            (executable != null ? "Download it and restart now? Your maps and settings are kept." : "Open the download page?");
+        if (MessageBox.Show(this, question, "Update available", MessageBoxButtons.YesNo, MessageBoxIcon.Information) != DialogResult.Yes) return;
+        if (executable == null || updater == null) { Open(release.PageUrl);return; }
+        var staged = AppUpdater.DownloadPath(executable);
+        if (!await Run("Downloading SCCT Map Manager " + release.Tag, ct => updater.DownloadAsync(release, staged, Reporter(), ct), "Update stopped") || closing) return;
+        try { AppUpdater.Install(staged, executable); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            try { File.Delete(staged); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            if (MessageBox.Show(this, $"Windows did not allow the manager to replace itself in {Path.GetDirectoryName(executable)}.\n\n{ex.Message}\n\nOpen the download page to update manually?",
+                "Update not installed", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) Open(release.PageUrl);
+            return;
+        }
+        try
+        {
+            var restart = new ProcessStartInfo(executable) { UseShellExecute = false, WorkingDirectory = Path.GetDirectoryName(executable)! };
+            restart.ArgumentList.Add("--root");restart.ArgumentList.Add(store.GameRoot);
+            restart.ArgumentList.Add("--wait-for-pid");restart.ArgumentList.Add(Environment.ProcessId.ToString());
+            Process.Start(restart);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, $"{release.Tag} is installed. Start the manager again to use it.\n\n{ex.Message}", "Restart needed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        Close();
+    }
     private void SeedCatalog()
     {
         if (store.Catalog != null) return;
@@ -174,26 +252,28 @@ public sealed class MainForm : Form
             progress.Maximum = Math.Max(1, p.Total);progress.Value = Math.Clamp(p.Completed, 0, progress.Maximum);
         }));
     });
-    private async Task Run(string message, Func<CancellationToken, Task> action)
+    private async Task<bool> Run(string message, Func<CancellationToken, Task> action, string failureTitle = "Map operation stopped")
     {
-        if (busy) return;
+        if (busy) return false;
+        bool succeeded = false;
         busy = true;operation = new CancellationTokenSource();SetBusy();operationStatus.Text = message;progress.Style = ProgressBarStyle.Marquee;
-        try { await Task.Run(() => action(operation.Token));operationStatus.Text = "Done. " + store.CatalogMessage; }
+        try { await Task.Run(() => action(operation.Token));operationStatus.Text = "Done. " + store.CatalogMessage;succeeded = true; }
         catch (OperationCanceledException) { operationStatus.Text = "Cancelled. Any in-progress installation was rolled back."; }
         catch (Exception ex)
         {
             operationStatus.Text = ex.Message;
-            if (!closing) MessageBox.Show(this, ex.Message, "Map operation stopped", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            if (!closing) MessageBox.Show(this, ex.Message, failureTitle, MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
         finally
         {
             busy = false;operation.Dispose();operation = null;progress.Style = ProgressBarStyle.Continuous;progress.Value = 0;SetBusy();FillMaps();
             if (closing) Close();
         }
+        return succeeded;
     }
     private void SetBusy()
     {
-        foreach (Control c in new Control[] { search, category, statusFilter, grid, source, download, enable, disable, folder, refresh }) c.Enabled = !busy;
+        foreach (Control c in new Control[] { search, category, statusFilter, grid, version, source, download, enable, disable, folder, refresh }) c.Enabled = !busy;
         cancel.Visible = busy;cancel.Enabled = busy;cancel.Text = "Cancel";progress.Visible = busy;
     }
     private void FillMaps()
@@ -267,18 +347,56 @@ public sealed class MainForm : Form
         }
         finally { graphics.Restore(saved); }
     }
-    private async Task Detail()
+    private Task Detail()
+    {
+        var map = Selected;
+        var previous = version.SelectedItem as VersionChoice;
+        fillingVersions = true;
+        try
+        {
+            version.Items.Clear();
+            if (map != null)
+            {
+                store.State.Installed.TryGetValue(map.Id, out var installed);
+                store.State.Downloads.TryGetValue(map.Id, out var saved);
+                var choices = (store.Catalog?.VersionsOf(map) ?? [map]).ToList();
+                // Installed or downloaded builds stay selectable even after they leave the catalog.
+                foreach (var kept in new[] { saved, installed?.Entry })
+                    if (kept != null && choices.All(c => c.Fingerprint != kept.Fingerprint)) choices.Add(kept);
+                var newest = store.Catalog?.Maps.FirstOrDefault(m => m.Id == map.Id);
+                foreach (var choice in choices) version.Items.Add(new VersionChoice(choice, VersionLabel(choice, newest, installed, saved)));
+                // Keep the user's pick while the same map stays selected; otherwise show what is in use.
+                var preferred = previous?.Entry.Id == map.Id ? previous.Entry : saved ?? installed?.Entry ?? map;
+                var index = choices.FindIndex(c => c.Fingerprint == preferred.Fingerprint && c.Version == preferred.Version);
+                version.SelectedIndex = Math.Max(0, index >= 0 ? index : choices.FindIndex(c => c.Fingerprint == preferred.Fingerprint));
+            }
+        }
+        finally { fillingVersions = false; }
+        return VersionDetail();
+    }
+    private static string VersionName(MapEntry map) => DisplayVersion(map) is { Length: > 0 } shown ? shown : map.Version;
+    private static string VersionLabel(MapEntry choice, MapEntry? newest, InstalledMap? installed, MapEntry? saved)
+    {
+        var label = VersionName(choice);
+        if (newest != null && choice.Fingerprint == newest.Fingerprint && choice.Version == newest.Version) label += " (latest)";
+        if (installed?.Entry.Fingerprint == choice.Fingerprint) label += installed.Enabled ? " • enabled" : " • disabled";
+        else if (saved?.Fingerprint == choice.Fingerprint) label += " • downloaded";
+        return label;
+    }
+    private async Task VersionDetail()
     {
         notesCancel?.Cancel();notesCancel?.Dispose();notesCancel = new CancellationTokenSource();var ct = notesCancel.Token;
-        var map = Selected;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
-        if (map == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";notes.Clear();source.Enabled = false;return; }
-        mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {map.Version}\n{map.Packages}  •  {SizeText(map.Bytes)}  •  {map.Files.Count} files";
+        var map = Selected;var chosen = Chosen;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
+        version.Enabled = version.Items.Count > 1 && !busy;
+        if (map == null || chosen == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";notes.Clear();source.Enabled = false;return; }
+        mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {chosen.Version}\n{chosen.Packages}  •  {SizeText(chosen.Bytes)}  •  {chosen.Files.Count} files";
         summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nDisabling keeps shared assets installed.";
-        source.Enabled = map.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
-        enable.Text = installed?.Enabled == true ? "Repair / enable" : "Enable map";
-        download.Text = store.HasUpdate(map) ? "Download update" : "Download map";
+        source.Enabled = chosen.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
+        bool chosenInstalled = installed?.Entry.Fingerprint == chosen.Fingerprint, latest = chosen.Fingerprint == map.Fingerprint;
+        enable.Text = installed?.Enabled == true ? (chosenInstalled ? "Repair / enable" : "Switch to " + VersionName(chosen)) : "Enable map";
+        download.Text = latest ? (store.HasUpdate(map) ? "Download update" : "Download map") : "Download " + VersionName(chosen);
         notes.Text = "Loading map notes…";
-        try { var text = await repository.NotesAsync(map, ct);if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = text; }
+        try { var text = await repository.NotesAsync(chosen, ct);if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = text; }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception) { if (!ct.IsCancellationRequested && !IsDisposed) notes.Text = "Map notes are unavailable offline. Previously downloaded maps can still be enabled.\n\n" + RepositoryClient.RepositoryUrl; }
     }
