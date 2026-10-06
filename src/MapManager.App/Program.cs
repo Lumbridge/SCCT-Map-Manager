@@ -42,14 +42,23 @@ internal static class Program
                 var artifact = args.SkipWhile(a => a != "--ui-smoke").Skip(1).FirstOrDefault();
                 form.Shown += async (_, _) =>
                 {
-                    await form.InitialLoad;
-                    var checks = await form.SmokeAsync(artifact);
-                    if (artifact != null)
+                    try
                     {
-                        Directory.CreateDirectory(artifact);
-                        using var bitmap = new Bitmap(form.Width, form.Height);form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
-                        bitmap.Save(Path.Combine(artifact, "map-manager.png"));
-                        File.WriteAllText(Path.Combine(artifact, "ui-smoke.txt"), $"Map rows: {form.VisibleMapCount}\n{form.CatalogStatus}\n{checks}");
+                        await form.InitialLoad;
+                        var checks = await form.SmokeAsync(artifact);
+                        if (artifact != null)
+                        {
+                            Directory.CreateDirectory(artifact);
+                            using var bitmap = new Bitmap(form.Width, form.Height);form.DrawToBitmap(bitmap, new Rectangle(Point.Empty, form.Size));
+                            bitmap.Save(Path.Combine(artifact, "map-manager.png"));
+                            File.WriteAllText(Path.Combine(artifact, "ui-smoke.txt"), $"Map rows: {form.VisibleMapCount}\n{form.CatalogStatus}\n{checks}");
+                        }
+                    }
+                    // Report failures as an exit code instead of a dialog that blocks unattended runs.
+                    catch (Exception ex)
+                    {
+                        if (artifact != null) { Directory.CreateDirectory(artifact);File.WriteAllText(Path.Combine(artifact, "error.txt"), ex.ToString()); }
+                        Environment.ExitCode = 1;
                     }
                     form.Close();
                 };

@@ -409,9 +409,19 @@ public sealed class MainForm : Form
         category.SelectedItem = CatalogPresentation.JpMaps;
         if (grid.Rows.Count != jpCount) throw new InvalidOperationException("JP's Maps filter failed.");
         category.SelectedItem = "Enhanced";if (grid.Rows.Count != 1) throw new InvalidOperationException("Enhanced filter failed.");
-        category.SelectedIndex = 0;search.Text = "Shipment";if (grid.Rows.Count != 1) throw new InvalidOperationException("Map search failed.");
-        search.Clear();foreach (DataGridViewRow row in grid.Rows) if (row.Tag is MapEntry m && m.Name == "Shipment") { grid.CurrentCell = row.Cells[0];break; }
+        category.SelectedIndex = 0;int unfiltered = grid.Rows.Count;search.Text = "Shipment";
+        // Other collections may also carry a Shipment (e.g. ports), so check the filter rather than an exact count.
+        var found = grid.Rows.Cast<DataGridViewRow>().Select(row => (MapEntry)row.Tag!).ToList();
+        if (found.Count == 0 || found.Count >= unfiltered || !found.All(m => (m.Name + " " + m.Packages).Contains("Shipment", StringComparison.OrdinalIgnoreCase))
+            || !found.Any(m => CatalogPresentation.IsJpMap(m) && m.Name == "Shipment")) throw new InvalidOperationException("Map search failed.");
+        search.Clear();foreach (DataGridViewRow row in grid.Rows) if (row.Tag is MapEntry m && CatalogPresentation.IsJpMap(m) && m.Name == "Shipment") { grid.CurrentCell = row.Cells[0];break; }
         await NotesLoad;
+        if (version.Items.Count < 2 || (version.SelectedItem as VersionChoice)?.Entry.Fingerprint != Selected?.Fingerprint || !version.Enabled)
+            throw new InvalidOperationException("Version picker did not offer Shipment's releases with the newest selected.");
+        version.SelectedIndex = version.Items.Count - 1;await NotesLoad;
+        if (Chosen?.Version == Selected?.Version || !metadata.Text.Contains(Chosen!.Version) || !download.Text.StartsWith("Download v"))
+            throw new InvalidOperationException("Choosing an older version did not update the details panel.");
+        var oldest = Chosen.Version;version.SelectedIndex = 0;await NotesLoad;
         if (artifact != null)
         {
             Directory.CreateDirectory(artifact);
@@ -437,7 +447,8 @@ public sealed class MainForm : Form
             finally { busy = false;SetBusy();Size = originalSize;operationStatus.Text = originalStatus;NotesLoad = Detail(); }
         }
         await NotesLoad;
-        return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nDisable enabled: {disable.Enabled}\nMap and asset filter, search and version checks passed.";
+        return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nVersions offered: {version.Items.Count} (newest {Selected?.Version}, oldest {oldest})\n" +
+            $"Disable enabled: {disable.Enabled}\nMap and asset filter, search, version picker and version checks passed.";
     }
     private sealed class AssetSmokeRepository : IRepositoryClient
     {
