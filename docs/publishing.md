@@ -2,6 +2,21 @@
 
 The manager reads the [SCCT-Maps](https://github.com/Lumbridge/SCCT-Maps) repository. Maps are picked up from its per-map `Packages` folders; ported maps live under `ports/<game-name>/<map-name>/` and appear in the **Ports** collection with their source game shown, while still installing into the normal SCCT `Packages` folders.
 
+## Original maps
+
+Original maps live at `release/<Package>/<version>/Packages`, for example `release/MoonD/v1.0/Packages/Maps/MoonD.sdc`. Each version folder is offered in the manager's version picker, newest first, and the folder name is the version shown.
+
+The name shown for a map comes from `release/names.json`, a single JSON object mapping package folders to display names:
+
+```json
+{
+  "ShipD": "Shipment",
+  "MoonD": "Moonlight Park"
+}
+```
+
+Add a line when you publish a new map; no manager update is needed. Names are plain text of up to 60 characters, and the file must stay under 64 KB. A package without an entry (or a missing or unreadable file) falls back to the manager's built-in names, then to the package name.
+
 ## Ported maps
 
 Give each map its own folder, for example:

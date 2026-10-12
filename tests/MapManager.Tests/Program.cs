@@ -313,6 +313,24 @@ Check(versionCatalog.VersionsOf(shipD).Last().NotesPath == "release/ShipD/v1/REA
 Check(versionCatalog.VersionsOf(b).Single() == b, "maps without older releases offer a single version");
 var savedVersions = JsonSerializer.Deserialize<Catalog>(JsonSerializer.Serialize(versionCatalog))!;
 Check(savedVersions.VersionsOf(shipD).Count == 3, "saved catalogs remember older versions for offline selection");
+// Display names
+versionTree["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = "release/MoonD/v1.0/Packages/Maps/MoonD.sdc", ["type"] = "blob", ["sha"] = new string('4', 40), ["size"] = 10 });
+versionTree["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = "release/NewD/v1.0/Packages/Maps/NewD.sdc", ["type"] = "blob", ["sha"] = new string('5', 40), ["size"] = 10 });
+var namedCatalog = CatalogParser.Parse(versionTree.ToJsonString());
+string NameOf(Catalog catalog, string package) => catalog.Maps.Single(m => m.Id == "original/" + package).Name;
+Check(NameOf(namedCatalog, "ShipD") == "Shipment" && NameOf(namedCatalog, "MoonD") == "Moonlight Park" && NameOf(namedCatalog, "NewD") == "NewD"
+    && namedCatalog.Maps.Single(m => m.Id == "original/MoonD").Version == "v1.0", "original maps use built-in display names, or the package name when none is known");
+var publishedNames = MapNames.Parse((char)0xFEFF + "{\"NewD\":\" New Docks \",\"ShipD\":\"Shipment Yard\",\"MoonD\":\"\",\"../x\":\"Escape\",\"Ctrl\":\"Two\\nLines\",\"Long\":\"" + new string('x', 61) + "\",\"Num\":5,\"Obj\":{}}");
+Check(publishedNames.Count == 2 && publishedNames["NewD"] == "New Docks" && publishedNames["ShipD"] == "Shipment Yard", "names file keeps valid entries and skips empty, oversized, multi-line, non-text and unsafe ones");
+var renamedCatalog = MapNames.Apply(namedCatalog, publishedNames);
+Check(NameOf(renamedCatalog, "NewD") == "New Docks" && NameOf(renamedCatalog, "ShipD") == "Shipment Yard" && NameOf(renamedCatalog, "MoonD") == "Moonlight Park",
+    "names from the repository override the built-in names and leave other maps alone");
+Check(renamedCatalog.VersionsOf(renamedCatalog.Maps.Single(m => m.Id == "original/ShipD")).All(v => v.Name == "Shipment Yard")
+    && renamedCatalog.Maps.Single(m => m.Id == "original/ShipD").Fingerprint == shipD.Fingerprint, "renaming covers every version and keeps the map identity and content fingerprint");
+Check(renamedCatalog.Maps.Select(m => m.Name).SequenceEqual(new[] { "Moonlight Park", "New Docks", "Shipment Yard" }), "renamed maps are listed in name order");
+Check(MapNames.Apply(new Catalog(a.Commit, DateTimeOffset.UtcNow, [b]), new Dictionary<string, string> { ["B"] = "Renamed" }).Maps.Single().Name == b.Name, "names apply to original maps only");
+foreach (var bad in new[] { "", "[]", "\"text\"", "{\"ShipD\":", "null" })
+    await Reject(() => { MapNames.Parse(bad);return Task.CompletedTask; }, "names file that is not a JSON object is rejected: " + (bad.Length == 0 ? "empty" : bad));
 var releasedVersions = AssetCatalog.ParseAll(manifest, a.Commit).Single();
 Check(releasedVersions.Select(v => v.Version).SequenceEqual(new[] { "v1.10.0", "v1.0.0" }), "release catalog keeps older pack and port versions");
 var legacyVersions = PortLayout.Normalize(new Catalog(a.Commit, DateTimeOffset.UtcNow, []) { Versions = new() { ["ports/rainbow-six-vegas"] = [casino with { Id = "ports/rainbow-six-vegas" }] } });
@@ -375,6 +393,7 @@ if (treeArg >= 0)
         .Select(path => path.Split('/')[2]).Distinct()
         .OrderByDescending(version => Version.Parse(version.TrimStart('v').Contains('.') ? version.TrimStart('v') : version.TrimStart('v') + ".0"));
     Check(catalog.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Shipment" && m.Version == shipmentVersions.First()), "select the latest original Shipment release");
+    Check(catalog.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Moonlight Park" && m.Version == "v1.0" && m.Packages == "MoonD"), "list Moonlight Park v1.0 under its display name");
     Check(catalog.Maps.Any(m => m.Category == "Enhanced") && catalog.Maps.Count(m => m.Category == "Recovered") == 5, "include enhanced and recovered collections");
     Check(catalog.Maps.Where(m => m.Category == "Community").All(m => m.Files.Any(f => f.Source.StartsWith("community/_shared/"))), "bundle shared community dependencies with each map");
     Check(catalog.Maps.All(m => m.Files.All(f => !f.Source.Contains("/src/") && !f.Source.EndsWith(".exe"))), "catalog excludes source artwork and executables");
@@ -383,6 +402,7 @@ if (treeArg >= 0)
     {
         using var live = new RepositoryClient();var liveRoot = Fixture("live-download");using var store = new MapStore(liveRoot, live);
         await store.RefreshAsync(default);Check(store.Catalog?.Maps.Count >= 62, "refresh catalog from public GitHub without credentials");
+        Check(store.Catalog!.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Moonlight Park" && m.Version == "v1.0"), "live catalog lists Moonlight Park v1.0 in JP's Maps");
         var shipment = store.Catalog!.Maps.Single(m => m.Name == "Shipment");
         await store.EnableAsync(shipment, false, new Progress<TransferProgress>(p => Console.WriteLine(p.Message)), default);
         Check(shipment.InstallFiles(false).All(f => Hashing.GitBlob(SafePaths.Under(liveRoot, f.Destination)) == f.Hash), "real Shipment map and every dependency match the pinned repository blobs");

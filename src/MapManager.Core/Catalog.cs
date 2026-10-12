@@ -62,7 +62,7 @@ public static class CatalogParser
             var parts = b.Path.Split('/');
             if (parts.Length < 5 || !b.Path.EndsWith(".sdc", StringComparison.OrdinalIgnoreCase)) continue;
             if (parts[0] == "release" && parts.Length == 6 && parts[3] == "Packages" && parts[4] == "Maps")
-                roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", parts[1] == "ShipD" ? "Shipment" : parts[1], "JP's Maps", parts[2], "");
+                roots[string.Join('/', parts.Take(3))] = ($"original/{parts[1]}", MapNames.BuiltInName(parts[1]), "JP's Maps", parts[2], "");
             else if (parts[0] == "ports" && parts.Length == 6 && parts[3] == "Packages" && parts[4] == "Maps" && parts[2] != "_shared")
             {
                 SafePaths.ValidateRelative(b.Path);

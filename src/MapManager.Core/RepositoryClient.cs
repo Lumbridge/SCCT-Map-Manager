@@ -26,6 +26,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
             throw new IOException("GitHub's request limit was reached. Your downloaded maps still work offline; refresh again later.");
         response.EnsureSuccessStatusCode();
         var catalog = CatalogParser.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+        catalog = MapNames.Apply(catalog, await MapNamesAsync(catalog.Commit, timeout.Token));
         using var assets = await http.GetAsync($"https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/{catalog.Commit}/asset-catalog.json", timeout.Token);
         if (assets.StatusCode != HttpStatusCode.NotFound)
         {
@@ -47,6 +48,20 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         return catalog;
         }
         catch (OperationCanceledException) when (!cancel.IsCancellationRequested) { throw new IOException("The catalog server timed out. The saved or bundled catalog is still available."); }
+    }
+    // Optional display names published with the maps. Any problem leaves the built-in names in place.
+    private async Task<Dictionary<string, string>> MapNamesAsync(string commit, CancellationToken cancel)
+    {
+        try
+        {
+            using var response = await http.GetAsync($"https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/{commit}/{MapNames.Path}", HttpCompletionOption.ResponseHeadersRead, cancel);
+            if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > MapNames.MaxBytes) return [];
+            await using var input = await response.Content.ReadAsStreamAsync(cancel);
+            var buffer = new byte[MapNames.MaxBytes + 1];int length = 0, read;
+            while (length < buffer.Length && (read = await input.ReadAsync(buffer.AsMemory(length), cancel)) != 0) length += read;
+            return length > MapNames.MaxBytes ? [] : MapNames.Parse(Encoding.UTF8.GetString(buffer, 0, length));
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException or InvalidDataException or System.Text.Json.JsonException) { return []; }
     }
     private static string Slug(string value) => string.Join('-', value.Split(' ', StringSplitOptions.RemoveEmptyEntries)
         .Select(part => new string(part.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant())) switch { { Length: > 0 } slug => slug, _ => "map" };
