@@ -18,6 +18,9 @@ public sealed class StoreState
 }
 public record Change(string Destination, string? BeforeHash, string? AfterHash);
 public record Journal(string Id, StoreState Before, List<Change> Changes);
+public enum BulkAction { Download, DownloadEditable, Enable }
+public record BulkStep(MapEntry Map, bool Source);
+public record BulkFailure(MapEntry Map, string Message);
 
 public sealed class MapStore : IDisposable
 {
@@ -96,6 +99,50 @@ public sealed class MapStore : IDisposable
     public bool CanDisable(MapEntry map) => !map.IsAssetPack && (State.Installed.TryGetValue(map.Id, out var m) ? m.Enabled : map.Files.Any(f => f.Destination.StartsWith("Packages/Maps/") && File.Exists(SafePaths.Under(GameRoot, f.Destination))));
     private static bool DifferentVersion(MapEntry saved, MapEntry available) => saved.Fingerprint != available.Fingerprint || (available.IsAssetPack && saved.Version != available.Version);
     public bool HasUpdate(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) ? DifferentVersion(m.Entry, map) : State.Downloads.TryGetValue(map.Id, out var d) && DifferentVersion(d, map);
+    // The version a map acts on when none is picked: the downloaded or installed build, else the newest.
+    public MapEntry DefaultVersion(MapEntry map) => State.Downloads.TryGetValue(map.Id, out var saved) ? saved : State.Installed.TryGetValue(map.Id, out var m) ? m.Entry : map;
+    public bool IncludesSource(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) && m.IncludeSource;
+    // Enabled maps and copies installed outside the manager are already in play; enabled maps with missing files still need a repair.
+    public bool IsPlayable(MapEntry map) => CanDisable(map) && Status(map) != "Files missing";
+    public List<BulkStep> PlanBulk(IEnumerable<MapEntry> maps, BulkAction action) => action switch
+    {
+        // Downloads fetch the newest version and keep each map's editable-source choice.
+        BulkAction.Download => maps.Where(m => !m.IsAssetPack).Select(m => new BulkStep(m, IncludesSource(m))).ToList(),
+        BulkAction.DownloadEditable => maps.Where(m => !m.IsAssetPack && m.HasSource).Select(m => new BulkStep(m, true)).ToList(),
+        // Maps already in play keep the version they have, so enabling several never switches versions.
+        _ => maps.Where(m => !m.IsAssetPack && !IsPlayable(m)).Select(m => new BulkStep(DefaultVersion(m), IncludesSource(m))).ToList()
+    };
+    // Runs every step even when some fail, so one conflicting map does not stop the rest; cancellation stops the batch.
+    public async Task<List<BulkFailure>> RunBulkAsync(IReadOnlyList<BulkStep> steps, BulkAction action, IProgress<TransferProgress>? progress, CancellationToken cancel)
+    {
+        var failures = new List<BulkFailure>();
+        for (int i = 0; i < steps.Count; i++)
+        {
+            cancel.ThrowIfCancellationRequested();
+            var (map, source) = steps[i];var prefix = $"{i + 1} of {steps.Count} • {map.Name} • ";
+            var step = progress == null ? null : new PrefixedProgress(progress, prefix);
+            step?.Report(new TransferProgress(action == BulkAction.Enable ? "Enabling" : "Downloading", 0, 0));
+            try
+            {
+                if (action == BulkAction.Enable) await EnableVersionAsync(map, source, step, cancel);
+                else await DownloadAsync(map, source, step, cancel);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException) { failures.Add(new BulkFailure(map, ex.Message)); }
+        }
+        return failures;
+    }
+    private sealed class PrefixedProgress(IProgress<TransferProgress> inner, string prefix) : IProgress<TransferProgress>
+    {
+        public void Report(TransferProgress value) => inner.Report(value with { Message = prefix + value.Message });
+    }
+    // Re-enables the disabled copy byte for byte when it is the chosen version; otherwise installs the chosen version.
+    public async Task EnableVersionAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel)
+    {
+        if (State.Installed.TryGetValue(map.Id, out var installed) && !installed.Enabled && installed.Entry.Fingerprint == map.Fingerprint &&
+            !(installed.External && State.Downloads.ContainsKey(map.Id)))
+            await RestoreDisabledAsync(map, cancel);
+        else await EnableAsync(map, source, progress, cancel);
+    }
     public async Task DownloadAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel)
     {
         await operations.WaitAsync(cancel);

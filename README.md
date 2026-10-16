@@ -21,6 +21,7 @@ The manager checks for new versions when it starts. When one is available, an **
 - **Download map** just saves it for later, or updates an installed map.
 - Use **Version** to choose an older release of a map, for example to match a server. Enable or download installs that version; the list shows the newest version and the one you have.
 - Tick **Include editable source maps** if you also want the editor (`MapsEd`) files.
+- Select several maps with Ctrl+click, Shift+click or Ctrl+A to **Enable all**, **Download all** or **Download all editable versions** at once. Enable all leaves maps that are already enabled as they are; if some maps cannot be changed, for example because they need a different version of a shared file, the rest still go ahead and the manager lists the ones it skipped.
 - **Change folder** switches to another game installation.
 
 Close the game and the editor before enabling, disabling or updating maps. Everyone on a server needs the same map files.

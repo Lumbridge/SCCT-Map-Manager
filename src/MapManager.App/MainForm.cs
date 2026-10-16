@@ -18,7 +18,7 @@ public sealed class MainForm : Form
     private readonly TextBox search = new() { PlaceholderText = "Search maps or package names", Dock = DockStyle.Fill };
     private readonly ComboBox category = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
     private readonly ComboBox statusFilter = new() { DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill };
-    private readonly DataGridView grid = new() { Dock = DockStyle.Fill, ReadOnly = true, MultiSelect = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+    private readonly DataGridView grid = new() { Dock = DockStyle.Fill, ReadOnly = true, MultiSelect = true, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
         AllowUserToAddRows = false, AllowUserToDeleteRows = false, AllowUserToResizeRows = false, RowHeadersVisible = false, AutoGenerateColumns = false,
         BackgroundColor = Color.White, BorderStyle = BorderStyle.None, CellBorderStyle = DataGridViewCellBorderStyle.SingleHorizontal, GridColor = Pale };
     private readonly Label mapName = new() { AutoSize = true, MaximumSize = new Size(360, 0), Font = new Font("Segoe UI", 20, FontStyle.Bold) };
@@ -27,6 +27,9 @@ public sealed class MainForm : Form
     private readonly CheckBox source = new() { AutoSize = true, Text = "Include editable source maps (MapsEd)" };
     private readonly Button download = Button("Download / update"), enable = Button("Enable map", true), disable = Button("Disable map"), refresh = Button("Refresh"), folder = Button("Change folder");
     private readonly Button backups = Button("Open backups"), repo = Button("Repository"), cancel = Button("Cancel");
+    private readonly Button enableAll = Button("Enable all", true), downloadAll = Button("Download all"), downloadEditable = Button("Download all editable versions");
+    private readonly FlowLayoutPanel versionRow = new() { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+    private readonly Label notesTitle = new() { UseMnemonic = false, AutoSize = true, Margin = new Padding(0, 8, 0, 10) };
     private readonly RichTextBox notes = new() { Dock = DockStyle.Fill, ReadOnly = true, BorderStyle = BorderStyle.None, BackColor = Color.White, DetectUrls = true, WordWrap = true };
     private readonly Label target = new() { AutoSize = false, ForeColor = Color.DimGray, Dock = DockStyle.Fill, AutoEllipsis = true, UseMnemonic = false };
     private readonly Label count = new() { AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray };
@@ -34,13 +37,15 @@ public sealed class MainForm : Form
     private readonly Label operationStatus = new() { AutoSize = false, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Dock = DockStyle.Fill };
     private readonly ProgressBar progress = new() { Dock = DockStyle.Fill, Height = 8 };
     private CancellationTokenSource? operation, notesCancel;
-    private bool busy, closing;
+    private bool busy, closing, filling;
     private readonly TaskCompletionSource initial = new(TaskCreationOptions.RunContinuationsAsynchronously);
     public Task InitialLoad => initial.Task;
     public Task NotesLoad { get; private set; } = Task.CompletedTask;
     public int VisibleMapCount => grid.Rows.Count;
     public string CatalogStatus => catalogStatus.Text;
     private MapEntry? Selected => grid.CurrentRow?.Tag as MapEntry;
+    // Rows picked with Ctrl/Shift-click or Ctrl+A, in list order; several switch the details panel to bulk actions.
+    private List<MapEntry> SelectedMaps => grid.SelectedRows.Cast<DataGridViewRow>().OrderBy(r => r.Index).Select(r => (MapEntry)r.Tag!).ToList();
     // The version picked in the details panel; download and enable act on this rather than always the newest.
     private MapEntry? Chosen => (version.SelectedItem as VersionChoice)?.Entry is { } entry && entry.Id == Selected?.Id ? entry : Selected;
 
@@ -122,11 +127,11 @@ public sealed class MainForm : Form
         var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, BackColor = Color.White, Padding = new Padding(18) };
         for (int i = 0; i < 7; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         details.Controls.Add(mapName, 0, 0);details.Controls.Add(metadata, 0, 1);summary.Margin = new Padding(0, 14, 0, 14);details.Controls.Add(summary, 0, 2);
-        var versionRow = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
         versionRow.Controls.Add(new Label { Text = "Version", AutoSize = true, Margin = new Padding(0, 6, 10, 0) });versionRow.Controls.Add(version);details.Controls.Add(versionRow, 0, 3);
         source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 4);
-        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.Add(enable);mapActions.Controls.Add(disable);mapActions.Controls.Add(download);details.Controls.Add(mapActions, 0, 5);
-        var notesTitle = new Label { Text = "MAP NOTES & DEPENDENCIES", UseMnemonic = false, Font = new Font(Font, FontStyle.Bold), AutoSize = true, Margin = new Padding(0, 8, 0, 10) };details.Controls.Add(notesTitle, 0, 6);details.Controls.Add(notes, 0, 7);
+        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.AddRange([enable, disable, download, enableAll, downloadAll, downloadEditable]);details.Controls.Add(mapActions, 0, 5);
+        foreach (var button in new[] { enableAll, downloadAll, downloadEditable }) button.Visible = false;
+        notesTitle.Text = "MAP NOTES & DEPENDENCIES";notesTitle.Font = new Font(Font, FontStyle.Bold);details.Controls.Add(notesTitle, 0, 6);details.Controls.Add(notes, 0, 7);
         details.AutoScroll = true;details.SizeChanged += (_, _) => FitNotes();
         split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 2);
         this.details = details;
@@ -140,7 +145,7 @@ public sealed class MainForm : Form
         progress.Margin = Padding.Empty;progress.Visible = false;
         footer.Controls.Add(operationStatus, 0, 0);footer.Controls.Add(cancel, 1, 0);
         footer.Controls.Add(progress, 0, 1);footer.SetColumnSpan(progress, 2);outer.Controls.Add(footer, 0, 4);
-        operationStatus.Text = "Choose a map to download, enable or disable.";
+        operationStatus.Text = "Choose a map to download, enable or disable. Ctrl+click or Shift+click to select several.";
     }
     private TableLayoutPanel? details;
     // Keep the notes readable in short windows: give them a minimum height and let the details panel scroll instead.
@@ -159,25 +164,17 @@ public sealed class MainForm : Form
         search.TextChanged += (_, _) => FillMaps();category.SelectedIndexChanged += (_, _) => FillMaps();statusFilter.SelectedIndexChanged += (_, _) => FillMaps();
         grid.CellPainting += PaintPinnedMap;
         grid.ColumnHeaderMouseClick += (_, e) => SortRows(e.ColumnIndex);
-        grid.SelectionChanged += (_, _) => NotesLoad = Detail();
+        grid.SelectionChanged += (_, _) => { if (!filling) NotesLoad = Detail(); };
         version.SelectedIndexChanged += (_, _) => { if (!fillingVersions) NotesLoad = VersionDetail(); };
         refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
         backups.Click += (_, _) => { var path = SafePaths.Under(store.DataRoot, "Backups");Directory.CreateDirectory(path);Open(path); };
         cancel.Click += (_, _) => { operation?.Cancel();cancel.Enabled = false;cancel.Text = "Cancelling…"; };
         download.Click += async (_, _) => { if (Chosen is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => store.DownloadAsync(map, include, Reporter(), ct)); } };
-        enable.Click += async (_, _) =>
-        {
-            if (Chosen is not { } map) return;bool include = source.Checked;
-            await Run("Enabling " + map.Name, async ct =>
-            {
-                // Re-enable the disabled copy byte for byte when it is the chosen version; otherwise install the chosen version.
-                if (store.State.Installed.TryGetValue(map.Id, out var installed) && !installed.Enabled && installed.Entry.Fingerprint == map.Fingerprint &&
-                    !(installed.External && store.State.Downloads.ContainsKey(map.Id)))
-                    await store.RestoreDisabledAsync(map, ct);
-                else await store.EnableAsync(map, include, Reporter(), ct);
-            });
-        };
+        enable.Click += async (_, _) => { if (Chosen is { } map) { bool include = source.Checked;await Run("Enabling " + map.Name, ct => store.EnableVersionAsync(map, include, Reporter(), ct)); } };
+        enableAll.Click += async (_, _) => await RunBulk(BulkAction.Enable);
+        downloadAll.Click += async (_, _) => await RunBulk(BulkAction.Download);
+        downloadEditable.Click += async (_, _) => await RunBulk(BulkAction.DownloadEditable);
         disable.Click += async (_, _) => { if (Selected is { } map) await Run("Disabling " + map.Name, ct => store.DisableAsync(map, ct)); };
         MarkdownView.EnableLinks(notes);
         folder.Click += (_, _) =>
@@ -259,7 +256,10 @@ public sealed class MainForm : Form
         if (IsDisposed || !IsHandleCreated) return;
         BeginInvoke((Action)(() =>
         {
-            if (IsDisposed || !busy) return;operationStatus.Text = p.Message + $"   {p.Completed}/{p.Total}";progress.Style = ProgressBarStyle.Continuous;
+            if (IsDisposed || !busy) return;
+            // Steps without a file count, such as the start of each map in a batch, show as indeterminate.
+            if (p.Total <= 0) { operationStatus.Text = p.Message;progress.Style = ProgressBarStyle.Marquee;return; }
+            operationStatus.Text = p.Message + $"   {p.Completed}/{p.Total}";progress.Style = ProgressBarStyle.Continuous;
             progress.Maximum = Math.Max(1, p.Total);progress.Value = Math.Clamp(p.Completed, 0, progress.Maximum);
         }));
     });
@@ -284,36 +284,55 @@ public sealed class MainForm : Form
     }
     private void SetBusy()
     {
-        foreach (Control c in new Control[] { search, category, statusFilter, grid, version, source, download, enable, disable, folder, refresh }) c.Enabled = !busy;
+        foreach (Control c in new Control[] { search, category, statusFilter, grid, version, source, download, enable, disable, enableAll, downloadAll, downloadEditable, folder, refresh }) c.Enabled = !busy;
         cancel.Visible = busy;cancel.Enabled = busy;cancel.Text = "Cancel";progress.Visible = busy;
     }
     private void FillMaps()
     {
-        if (busy) return;string? selected = Selected?.Id;
-        grid.Rows.Clear();var maps = CatalogPresentation.Order((store.Catalog?.Maps ?? []).Concat(store.State.Installed.Values.Select(m => m.Entry)).Concat(store.State.Downloads.Values)
+        if (busy) return;var (current, selected) = (Selected?.Id, SelectedMaps.Select(m => m.Id).ToHashSet());
+        var maps = CatalogPresentation.Order((store.Catalog?.Maps ?? []).Concat(store.State.Installed.Values.Select(m => m.Entry)).Concat(store.State.Downloads.Values)
             .Where(m => !m.IsAssetPack).DistinctBy(m => m.Id)).ToList();
         string q = search.Text.Trim();
-        foreach (var map in maps)
+        filling = true;
+        try
         {
-            string state = store.Status(map);
-            if (q.Length > 0 && !(map.Name + " " + map.Packages).Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
-            if (category.SelectedIndex > 0 && map.Category != category.Text) continue;
-            bool matches = statusFilter.Text switch
+            grid.Rows.Clear();
+            foreach (var map in maps)
             {
-                "Updates available" => store.HasUpdate(map), "Enabled" => state.StartsWith("Enabled"), "Disabled" => state.StartsWith("Disabled"),
-                "Downloaded" => store.State.Downloads.ContainsKey(map.Id), "Not downloaded" => !store.State.Downloads.ContainsKey(map.Id), _ => true
-            };
-            if (!matches) continue;
-            int index = grid.Rows.Add(map.Name, map.Category, DisplayVersion(map), state);grid.Rows[index].Tag = map;
-            if (CatalogPresentation.IsJpMap(map))
-            {
-                grid.Rows[index].Cells[0].Style.Padding = new Padding(30, 4, 4, 4);
-                grid.Rows[index].Cells[0].ToolTipText = "Pinned • JP's Maps";
+                string state = store.Status(map);
+                if (q.Length > 0 && !(map.Name + " " + map.Packages).Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+                if (category.SelectedIndex > 0 && map.Category != category.Text) continue;
+                bool matches = statusFilter.Text switch
+                {
+                    "Updates available" => store.HasUpdate(map), "Enabled" => state.StartsWith("Enabled"), "Disabled" => state.StartsWith("Disabled"),
+                    "Downloaded" => store.State.Downloads.ContainsKey(map.Id), "Not downloaded" => !store.State.Downloads.ContainsKey(map.Id), _ => true
+                };
+                if (!matches) continue;
+                AddRow(map, map.Name, map.Category, DisplayVersion(map), state);
             }
-            if (map.Id == selected) grid.CurrentCell = grid.Rows[index].Cells[0];
+            RestoreSelection(current, selected);
         }
+        finally { filling = false; }
         count.Text = $"{grid.Rows.Count} maps shown  •  {maps.Count} in the library  •  {store.State.Installed.Values.Count(m => m.Enabled && !m.Entry.IsAssetPack)} managed and enabled";
         catalogStatus.Text = store.CatalogMessage;NotesLoad = Detail();
+    }
+    private void AddRow(MapEntry map, params object[] values)
+    {
+        int index = grid.Rows.Add(values);grid.Rows[index].Tag = map;
+        if (CatalogPresentation.IsJpMap(map))
+        {
+            grid.Rows[index].Cells[0].Style.Padding = new Padding(30, 4, 4, 4);
+            grid.Rows[index].Cells[0].ToolTipText = "Pinned • JP's Maps";
+        }
+    }
+    // Rebuilding the rows drops the selection; reselect the maps that are still shown, keeping the focused one current.
+    private void RestoreSelection(string? current, IReadOnlySet<string> selected)
+    {
+        var rows = grid.Rows.Cast<DataGridViewRow>().ToList();
+        var focus = rows.FirstOrDefault(r => ((MapEntry)r.Tag!).Id == current) ?? (selected.Count > 1 ? rows.FirstOrDefault(r => selected.Contains(((MapEntry)r.Tag!).Id)) : null);
+        // Setting the current cell clears the selection, so the other rows are selected after it.
+        if (focus != null) grid.CurrentCell = focus.Cells[0];
+        if (selected.Count > 1) foreach (var row in rows) if (selected.Contains(((MapEntry)row.Tag!).Id)) row.Selected = true;
     }
     private static string DisplayVersion(MapEntry map)
     {
@@ -331,13 +350,16 @@ public sealed class MainForm : Form
             var result = string.Compare(a.Values[columnIndex], b.Values[columnIndex], StringComparison.OrdinalIgnoreCase);
             return ascending ? result : -result;
         });
-        grid.Rows.Clear();
-        foreach (var row in rows)
+        var (current, selected) = (Selected?.Id, SelectedMaps.Select(m => m.Id).ToHashSet());
+        filling = true;
+        try
         {
-            var index = grid.Rows.Add(row.Values);
-            grid.Rows[index].Tag = row.Map;
+            grid.Rows.Clear();
+            foreach (var row in rows) AddRow(row.Map, row.Values);
+            RestoreSelection(current, selected);
         }
-        grid.Tag = new SortState(columnIndex, ascending);
+        finally { filling = false; }
+        grid.Tag = new SortState(columnIndex, ascending);NotesLoad = Detail();
     }
     private sealed record SortState(int Column, bool Ascending);
     private void PaintPinnedMap(object? sender, DataGridViewCellPaintingEventArgs e)
@@ -397,6 +419,11 @@ public sealed class MainForm : Form
     private async Task VersionDetail()
     {
         notesCancel?.Cancel();notesCancel?.Dispose();notesCancel = new CancellationTokenSource();var ct = notesCancel.Token;
+        bool multiple = grid.SelectedRows.Count > 1;
+        foreach (var single in new Control[] { versionRow, source, enable, disable, download }) single.Visible = !multiple;
+        foreach (var bulk in new Control[] { enableAll, downloadAll, downloadEditable }) bulk.Visible = multiple;
+        notesTitle.Text = multiple ? "SELECTED MAPS" : "MAP NOTES & DEPENDENCIES";
+        if (multiple) { SelectionDetail();return; }
         var map = Selected;var chosen = Chosen;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
         version.Enabled = version.Items.Count > 1 && !busy;
         if (map == null || chosen == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");source.Enabled = false;return; }
@@ -411,6 +438,32 @@ public sealed class MainForm : Form
         try { var text = await repository.NotesAsync(chosen, ct);if (!ct.IsCancellationRequested && !IsDisposed) MarkdownView.RenderNotes(notes, text, chosen); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
         catch (Exception) { if (!ct.IsCancellationRequested && !IsDisposed) MarkdownView.Render(notes, "Map notes are unavailable offline. Previously downloaded maps can still be enabled.\n\n" + RepositoryClient.RepositoryUrl); }
+    }
+    private void SelectionDetail()
+    {
+        var maps = SelectedMaps;
+        int toEnable = store.PlanBulk(maps, BulkAction.Enable).Count, editable = store.PlanBulk(maps, BulkAction.DownloadEditable).Count;
+        mapName.Text = $"{maps.Count} maps selected";
+        metadata.Text = string.Join("  •  ", maps.GroupBy(m => m.Category).Select(g => $"{g.Count()} {g.Key}")) + $"\nUp to {SizeText(maps.Sum(m => m.Bytes))} including editable versions";
+        summary.Text = $"Enable all: {toEnable} to enable, {maps.Count - toEnable} already enabled.\nDownload all: the newest version of each map.\nEditable versions (MapsEd): {editable} of {maps.Count} maps.";
+        enableAll.Enabled = toEnable > 0 && !busy;downloadAll.Enabled = !busy;downloadEditable.Enabled = editable > 0 && !busy;
+        details?.PerformLayout();FitNotes();
+        // Names are escaped so markdown characters in them show as written.
+        static string Plain(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"[\\`*_{}\[\]()#+\-.!|]", @"\$0");
+        MarkdownView.Render(notes, string.Join("\n", maps.Select(m => $"- **{Plain(m.Name)}** — {Plain(m.Category)}  •  {Plain(store.Status(m))}{(m.HasSource ? "  •  editable" : "")}")));
+    }
+    private async Task RunBulk(BulkAction action)
+    {
+        var steps = store.PlanBulk(SelectedMaps, action);
+        if (steps.Count == 0) return;
+        string verb = action switch { BulkAction.Enable => "Enabling", BulkAction.Download => "Downloading", _ => "Downloading editable versions of" };
+        List<BulkFailure> failures = [];var reporter = Reporter();
+        if (!await Run($"{verb} {steps.Count} maps…", async ct => failures = await store.RunBulkAsync(steps, action, reporter, ct)) || failures.Count == 0 || closing || IsDisposed) return;
+        operationStatus.Text = $"{steps.Count - failures.Count} of {steps.Count} maps done. {failures.Count} could not be changed.";
+        // Maps that failed for the same reason, such as the game running, are listed together.
+        var reasons = failures.GroupBy(f => f.Message).Select(g => $"{string.Join(", ", g.Select(f => f.Map.Name))}:\n{g.Key}").ToList();
+        var more = reasons.Count > 8 ? $"\n\n…and {reasons.Count - 8} more." : "";
+        MessageBox.Show(this, $"{failures.Count} of {steps.Count} maps could not be changed. The others were.\n\n{string.Join("\n\n", reasons.Take(8))}{more}", "Some maps were not changed", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
     private static string SizeText(long bytes) => bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024.0 * 1024 * 1024):0.0} GB" : $"{bytes / (1024.0 * 1024):0.0} MB";
     public async Task<string> SmokeAsync(string? artifact = null)
@@ -436,6 +489,19 @@ public sealed class MainForm : Form
         var oldest = Chosen.Version;version.SelectedIndex = 0;await NotesLoad;
         if (!notes.Text.StartsWith("Map notes are unavailable") && (notes.Text.Contains("**") || notes.Text.Contains("](") || notes.Text.Contains("| ---") || notes.Text.TrimStart().StartsWith('#')))
             throw new InvalidOperationException("Map notes still show raw markdown.");
+        grid.CurrentCell = grid.Rows[0].Cells[0];grid.Rows[1].Selected = true;grid.Rows[2].Selected = true;await NotesLoad;
+        if (!enableAll.Visible || !downloadAll.Visible || !downloadEditable.Visible || enable.Visible || version.Visible || mapName.Text != "3 maps selected")
+            throw new InvalidOperationException("Selecting several maps did not offer the bulk actions.");
+        if (artifact != null)
+        {
+            Directory.CreateDirectory(artifact);
+            using var bitmap = new Bitmap(Width, Height);DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size));bitmap.Save(Path.Combine(artifact, "map-manager-multi-select.png"));
+        }
+        FillMaps();
+        if (grid.SelectedRows.Count != 3) throw new InvalidOperationException("Refreshing the list lost the selected maps.");
+        foreach (DataGridViewRow row in grid.Rows) if (row.Tag is MapEntry m && CatalogPresentation.IsJpMap(m) && m.Name == "Shipment") { grid.CurrentCell = row.Cells[0];break; }
+        await NotesLoad;
+        if (!enable.Visible || enableAll.Visible || grid.SelectedRows.Count != 1) throw new InvalidOperationException("Selecting one map did not restore the single-map actions.");
         if (artifact != null)
         {
             Directory.CreateDirectory(artifact);

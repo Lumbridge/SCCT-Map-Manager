@@ -351,6 +351,50 @@ using (var store = new MapStore(pickRoot, client))
     Check(Read(pickRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2", "a disabled map can be enabled at a different version");
 }
 
+// Bulk actions on several selected maps
+var bulkRoot = Fixture("bulk-actions");
+var charlie = client.Map("enhanced/C", "Charlie", "charlie", "shared-v1");
+var delta = client.Map("recovered/D", "Delta", "delta", "shared-v2");
+using (var store = new MapStore(bulkRoot, client))
+{
+    await store.EnableAsync(a, true, null, default);
+    Check(store.PlanBulk([a, b, charlie], BulkAction.Enable).Select(s => s.Map.Id).SequenceEqual(new[] { b.Id, charlie.Id }), "enable all skips maps that are already enabled");
+    Check(store.PlanBulk([a, b], BulkAction.DownloadEditable).Single() == new BulkStep(a, true), "download all editable versions covers only maps with MapsEd files");
+    Check(store.PlanBulk([a, b], BulkAction.Download).SequenceEqual(new[] { new BulkStep(a, true), new BulkStep(b, false) }), "download all keeps each map's editable-source choice");
+    var messages = new List<string>();
+    var downloaded = await store.RunBulkAsync(store.PlanBulk([b, charlie], BulkAction.Download), BulkAction.Download, new SyncProgress(p => messages.Add(p.Message)), default);
+    Check(downloaded.Count == 0 && store.Status(b) == "Downloaded" && store.Status(charlie) == "Downloaded" && !File.Exists(Path.Combine(bulkRoot, "Packages/Maps/Bravo.sdc")), "download all saves every map without enabling it");
+    Check(messages.Contains("2 of 2 • Charlie • Downloading Charlie.sdc"), "bulk progress names the map and its place in the batch");
+    var failed = await store.RunBulkAsync(store.PlanBulk([a, b, delta, charlie], BulkAction.Enable), BulkAction.Enable, null, default);
+    Check(failed.Single().Map.Id == delta.Id && failed.Single().Message.Contains("Disable that map"), "enable all reports a conflicting map");
+    Check(store.Status(b) == "Enabled" && store.Status(charlie) == "Enabled" && !File.Exists(Path.Combine(bulkRoot, "Packages/Maps/Delta.sdc")), "one conflicting map does not stop the rest of the batch");
+    Check(Read(bulkRoot, "Packages/Textures/Shared.utx") == "shared-v1" && store.State.Installed[a.Id].Entry.Fingerprint == a.Fingerprint, "the failed map leaves the installation and enabled maps untouched");
+    await store.DisableAsync(b, default);await store.DisableAsync(charlie, default);
+    client.Offline = true;await store.RunBulkAsync(store.PlanBulk([b, charlie], BulkAction.Enable), BulkAction.Enable, null, default);client.Offline = false;
+    Check(store.Status(b) == "Enabled" && store.Status(charlie) == "Enabled", "enable all re-enables disabled maps offline");
+    using var cancelled = new CancellationTokenSource();cancelled.Cancel();
+    await Reject(() => store.RunBulkAsync(store.PlanBulk([delta], BulkAction.Download), BulkAction.Download, null, cancelled.Token), "cancellation stops a batch");
+    Check(!store.State.Downloads.ContainsKey(delta.Id), "a cancelled batch changes nothing further");
+}
+var bulkEditableRoot = Fixture("bulk-editable");
+using (var store = new MapStore(bulkEditableRoot, client))
+{
+    await store.EnableAsync(a, false, null, default);await store.DownloadAsync(b, false, null, default);
+    await store.RunBulkAsync(store.PlanBulk([a, b], BulkAction.DownloadEditable), BulkAction.DownloadEditable, null, default);
+    Check(Read(bulkEditableRoot, "Packages/MapsEd/Alpha.sdc") == "source alpha-v1" && store.State.Installed[a.Id].IncludeSource, "download all editable versions adds MapsEd files to enabled maps");
+    Check(store.Status(b) == "Downloaded" && !File.Exists(Path.Combine(bulkEditableRoot, "Packages/MapsEd/Bravo.sdc")), "maps without editable versions are left as they were");
+}
+var bulkVersionRoot = Fixture("bulk-versions");Put(bulkVersionRoot, "Packages/Maps/Bravo.sdc", "existing custom build");
+using (var store = new MapStore(bulkVersionRoot, client))
+{
+    await store.DownloadAsync(a, false, null, default);await store.DisableAsync(b, default);
+    var steps = store.PlanBulk([update, b, charlie], BulkAction.Enable);
+    Check(steps[0].Map.Fingerprint == a.Fingerprint && steps[2].Map == charlie, "enable all uses the downloaded version, else the newest");
+    await store.RunBulkAsync(steps, BulkAction.Enable, null, default);
+    Check(Read(bulkVersionRoot, "Packages/Maps/Alpha.sdc") == "alpha-v1" && Read(bulkVersionRoot, "Packages/Maps/Bravo.sdc") == "existing custom build", "enable all restores a disabled existing copy byte for byte");
+    Check(store.PlanBulk([b], BulkAction.Enable).Count == 0, "copies already in play are not enabled again");
+}
+
 // Self-updater
 string ReleaseJson(string tag, string exeUrl, string? digest = null, bool sums = true, bool prerelease = false)
 {
@@ -432,6 +476,11 @@ if (draftArg >= 0)
     Check(store.State.Installed.Count == entries.Count, "all staged pack versions recorded independently");
 }
 Console.WriteLine($"PASS {assertions} checks. Fixtures: {output}");
+
+sealed class SyncProgress(Action<TransferProgress> report) : IProgress<TransferProgress>
+{
+    public void Report(TransferProgress value) => report(value);
+}
 
 sealed class DraftClient(string root) : IRepositoryClient
 {
