@@ -60,8 +60,10 @@ public sealed class MainForm : Form
         var tools = new ToolStripMenuItem("Tools");
         var assets = new ToolStripMenuItem("Textures & static meshes…");
         assets.Click += (_, _) => { using var dialog = new AssetLibraryDialog(store, repository);dialog.ShowDialog(this);FillMaps(); };
-        tools.DropDownOpening += (_, _) => assets.Enabled = !busy;
-        tools.DropDownItems.Add(assets);toolsMenu.Items.Add(tools);
+        var restoreGameFiles = new ToolStripMenuItem("Restore original game files…");
+        restoreGameFiles.Click += async (_, _) => await RestoreGameFilesAsync();
+        tools.DropDownOpening += (_, _) => assets.Enabled = restoreGameFiles.Enabled = !busy;
+        tools.DropDownItems.Add(assets);tools.DropDownItems.Add(restoreGameFiles);toolsMenu.Items.Add(tools);
         var help = new ToolStripMenuItem("Help");
         var checkUpdates = new ToolStripMenuItem("Check for updates…");
         checkUpdates.Click += async (_, _) => await CheckForUpdatesAsync(manual: true);
@@ -170,8 +172,14 @@ public sealed class MainForm : Form
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
         backups.Click += (_, _) => { var path = SafePaths.Under(store.DataRoot, "Backups");Directory.CreateDirectory(path);Open(path); };
         cancel.Click += (_, _) => { operation?.Cancel();cancel.Enabled = false;cancel.Text = "Cancelling…"; };
-        download.Click += async (_, _) => { if (Chosen is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => store.DownloadAsync(map, include, Reporter(), ct)); } };
-        enable.Click += async (_, _) => { if (Chosen is { } map) { bool include = source.Checked;await Run("Enabling " + map.Name, ct => store.EnableVersionAsync(map, include, Reporter(), ct)); } };
+        download.Click += async (_, _) =>
+        {
+            if (Chosen is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => AskingForGameFiles(map.Name, replace => store.DownloadAsync(map, include, Reporter(), ct, replace))); }
+        };
+        enable.Click += async (_, _) =>
+        {
+            if (Chosen is { } map) { bool include = source.Checked;await Run("Enabling " + map.Name, ct => AskingForGameFiles(map.Name, replace => store.EnableVersionAsync(map, include, Reporter(), ct, replace))); }
+        };
         enableAll.Click += async (_, _) => await RunBulk(BulkAction.Enable);
         downloadAll.Click += async (_, _) => await RunBulk(BulkAction.Download);
         downloadEditable.Click += async (_, _) => await RunBulk(BulkAction.DownloadEditable);
@@ -428,7 +436,7 @@ public sealed class MainForm : Form
         version.Enabled = version.Items.Count > 1 && !busy;
         if (map == null || chosen == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");source.Enabled = false;return; }
         mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {chosen.Version}\n{chosen.Packages}  •  {SizeText(chosen.Bytes)}  •  {chosen.Files.Count} files";
-        summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nDisabling keeps shared assets installed.";
+        summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nAsks before replacing game files; disabling puts them back.";
         source.Enabled = chosen.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
         bool chosenInstalled = installed?.Entry.Fingerprint == chosen.Fingerprint, latest = chosen.Fingerprint == map.Fingerprint;
         enable.Text = installed?.Enabled == true ? (chosenInstalled ? "Repair / enable" : "Switch to " + VersionName(chosen)) : "Enable map";
@@ -458,12 +466,57 @@ public sealed class MainForm : Form
         if (steps.Count == 0) return;
         string verb = action switch { BulkAction.Enable => "Enabling", BulkAction.Download => "Downloading", _ => "Downloading editable versions of" };
         List<BulkFailure> failures = [];var reporter = Reporter();
-        if (!await Run($"{verb} {steps.Count} maps…", async ct => failures = await store.RunBulkAsync(steps, action, reporter, ct)) || failures.Count == 0 || closing || IsDisposed) return;
+        if (!await Run($"{verb} {steps.Count} maps…", async ct =>
+        {
+            failures = await store.RunBulkAsync(steps, action, reporter, ct);
+            // Maps that would replace game files are left alone until the user agrees, then run again together.
+            var blocked = failures.Where(f => f.GameFiles.Count > 0).ToList();
+            if (blocked.Count == 0 || !AllowReplacing(blocked.SelectMany(f => f.GameFiles).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), blocked.Count == 1 ? blocked[0].Map.Name : $"{blocked.Count} maps")) return;
+            var retry = steps.Where(s => blocked.Any(f => f.Map.Id == s.Map.Id)).ToList();
+            failures = failures.Except(blocked).Concat(await store.RunBulkAsync(retry, action, reporter, ct, replaceGameFiles: true)).ToList();
+        }) || failures.Count == 0 || closing || IsDisposed) return;
         operationStatus.Text = $"{steps.Count - failures.Count} of {steps.Count} maps done. {failures.Count} could not be changed.";
         // Maps that failed for the same reason, such as the game running, are listed together.
         var reasons = failures.GroupBy(f => f.Message).Select(g => $"{string.Join(", ", g.Select(f => f.Map.Name))}:\n{g.Key}").ToList();
         var more = reasons.Count > 8 ? $"\n\n…and {reasons.Count - 8} more." : "";
         MessageBox.Show(this, $"{failures.Count} of {steps.Count} maps could not be changed. The others were.\n\n{string.Join("\n\n", reasons.Take(8))}{more}", "Some maps were not changed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+    }
+    // Runs an install; if it would replace files already in the game, asks and runs it again with the user's agreement.
+    // The store changes nothing before asking, so declining leaves the game as it was.
+    private async Task AskingForGameFiles(string what, Func<bool, Task> action)
+    {
+        try { await action(false); }
+        catch (GameFileReplacementException ex)
+        {
+            if (!AllowReplacing(ex.Paths, what)) throw new OperationCanceledException();
+            await action(true);
+        }
+    }
+    // Called from the operation's worker thread; the question is shown on the UI thread.
+    private bool AllowReplacing(IReadOnlyList<string> paths, string what) => Invoke(() =>
+    {
+        if (closing || IsDisposed) return false;
+        var shown = string.Join("\n", paths.Take(12)) + (paths.Count > 12 ? $"\n…and {paths.Count - 12} more" : "");
+        return MessageBox.Show(this, $"{what} would replace {paths.Count} {(paths.Count == 1 ? "file" : "files")} already in your game:\n\n{shown}\n\n" +
+            "Servers that use the original files may refuse to let you join while these are replaced. The originals are kept and go back when you disable the last map that needs them.\n\nReplace them?",
+            "Replace game files?", MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+    });
+    private async Task RestoreGameFilesAsync()
+    {
+        List<GameFileRestore> found = [];
+        if (!await Run("Looking for game files replaced by earlier versions…", async ct => found = await store.FindReplacedGameFilesAsync(ct)) || closing || IsDisposed) return;
+        if (found.Count == 0)
+        {
+            operationStatus.Text = "No game files need restoring.";
+            MessageBox.Show(this, "No game files need restoring. Files that maps replace from now on go back when you disable those maps.", "Restore original game files", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        var names = found.Select(f => f.Path == MapStore.RuntimePath ? f.Path + " (DLL patch from manager v0.4.5 or earlier)" : f.Path).ToList();
+        var shown = string.Join("\n", names.Take(12)) + (names.Count > 12 ? $"\n…and {names.Count - 12} more" : "");
+        if (MessageBox.Show(this, $"Earlier versions of the manager replaced {found.Count} game {(found.Count == 1 ? "file" : "files")} without asking:\n\n{shown}\n\n" +
+            "Servers that use the originals may refuse to let you join until they are back. Close the game and editor, then put the originals back?\n\n" +
+            "Maps that need the replacements may not load until you enable them again, which asks first.", "Restore original game files", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        await Run("Restoring original game files…", ct => store.RestoreGameFilesAsync(found, ct));
     }
     private static string SizeText(long bytes) => bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024.0 * 1024 * 1024):0.0} GB" : $"{bytes / (1024.0 * 1024):0.0} MB";
     public async Task<string> SmokeAsync(string? artifact = null)

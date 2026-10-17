@@ -107,7 +107,7 @@ if (OperatingSystem.IsWindows())
     var lockedRoot = Fixture("rollback");Put(lockedRoot, "Packages/Maps/Alpha.sdc", "original installed map");Put(lockedRoot, "Packages/Textures/Shared.utx", "original shared");
     using var store = new MapStore(lockedRoot, client);
     using (var locked = new FileStream(Path.Combine(lockedRoot, "Packages/Textures/Shared.utx"), FileMode.Open, FileAccess.Read, FileShare.Read))
-        await Reject(() => store.EnableAsync(a, false, null, default), "locked destination rolls back an interrupted installation");
+        await Reject(() => store.EnableAsync(a, false, null, default, replaceGameFiles: true), "locked destination rolls back an interrupted installation");
     Check(Read(lockedRoot, "Packages/Maps/Alpha.sdc") == "original installed map" && Read(lockedRoot, "Packages/Textures/Shared.utx") == "original shared" && store.State.Installed.Count == 0, "rollback restores original files and ownership state");
 }
 
@@ -393,6 +393,97 @@ using (var store = new MapStore(bulkVersionRoot, client))
     await store.RunBulkAsync(steps, BulkAction.Enable, null, default);
     Check(Read(bulkVersionRoot, "Packages/Maps/Alpha.sdc") == "alpha-v1" && Read(bulkVersionRoot, "Packages/Maps/Bravo.sdc") == "existing custom build", "enable all restores a disabled existing copy byte for byte");
     Check(store.PlanBulk([b], BulkAction.Enable).Count == 0, "copies already in play are not enabled again");
+}
+
+// Files already in the game
+async Task<bool> AsksFirst(Func<Task> action) { try { await action(); } catch (GameFileReplacementException) { return true; } return false; }
+var gameRoot = Fixture("game-files");Put(gameRoot, "Packages/Textures/Shared.utx", "stock shared");
+var stockHash = Hashing.GitBlob(SafePaths.Under(gameRoot, "Packages/Textures/Shared.utx"));
+using (var store = new MapStore(gameRoot, client))
+{
+    GameFileReplacementException? asked = null;
+    try { await store.EnableAsync(a, false, null, default); } catch (GameFileReplacementException ex) { asked = ex; }
+    Check(asked?.Paths.SequenceEqual(new[] { "Packages/Textures/Shared.utx" }) == true && Read(gameRoot, "Packages/Textures/Shared.utx") == "stock shared"
+        && store.State.Installed.Count == 0 && !File.Exists(Path.Combine(gameRoot, "Packages/Maps/Alpha.sdc")), "enabling a map stops before replacing a file the game already has");
+    await store.EnableAsync(a, false, null, default, replaceGameFiles: true);
+    Check(Read(gameRoot, "Packages/Textures/Shared.utx") == "shared-v1" && store.State.Originals["packages/textures/SHARED.utx"] == stockHash, "with agreement the map installs and the original is remembered");
+    Check(!await AsksFirst(() => store.EnableAsync(b, false, null, default)) && store.Status(b) == "Enabled", "maps that use the manager's copy need no further agreement");
+    await store.DisableAsync(a, default);
+    Check(Read(gameRoot, "Packages/Textures/Shared.utx") == "shared-v1", "a replaced game file stays while another enabled map uses it");
+    await store.DisableAsync(b, default);
+    Check(Read(gameRoot, "Packages/Textures/Shared.utx") == "stock shared", "disabling the last map that uses a replaced game file puts the original back");
+    Check(await AsksFirst(() => store.RestoreDisabledAsync(b, default)) && Read(gameRoot, "Packages/Textures/Shared.utx") == "stock shared", "re-enabling a disabled map asks again before replacing the original");
+    Check(await AsksFirst(() => store.EnableAsync(update, false, null, default)), "a new version of a disabled map asks instead of reporting local changes");
+    await store.RestoreDisabledAsync(b, default, replaceGameFiles: true);
+    Check(Read(gameRoot, "Packages/Textures/Shared.utx") == "shared-v1" && store.Status(b) == "Enabled", "re-enabling with agreement replaces the original again");
+    await store.DisableAsync(b, default);
+    var blocked = await store.RunBulkAsync(store.PlanBulk([a, b], BulkAction.Enable), BulkAction.Enable, null, default);
+    Check(blocked.Count == 2 && blocked.All(f => f.GameFiles.SequenceEqual(new[] { "Packages/Textures/Shared.utx" })) && Read(gameRoot, "Packages/Textures/Shared.utx") == "stock shared",
+        "enable all reports maps that would replace game files and leaves them alone");
+    Check((await store.RunBulkAsync(store.PlanBulk([a, b], BulkAction.Enable), BulkAction.Enable, null, default, replaceGameFiles: true)).Count == 0
+        && store.Status(a) == "Enabled" && store.Status(b) == "Enabled", "enable all with agreement replaces them");
+}
+using (var store = new MapStore(gameRoot, client))
+    Check(store.State.Originals.ContainsKey("Packages/Textures/Shared.utx"), "remembered originals survive a restart");
+var copyRoot = Fixture("game-files-map-copy");Put(copyRoot, "Packages/Maps/Alpha.sdc", "copy from a server");
+using (var store = new MapStore(copyRoot, client))
+{
+    Check(await AsksFirst(() => store.EnableAsync(a, false, null, default)), "enabling asks before replacing a map copy installed outside the manager");
+    await store.EnableAsync(a, false, null, default, replaceGameFiles: true);await store.DisableAsync(a, default);
+    Check(Read(copyRoot, "Packages/Maps/Alpha.sdc") == "copy from a server", "disabling puts the earlier map copy back");
+}
+
+var lostRoot = Fixture("game-files-lost-original");Put(lostRoot, "Packages/Textures/Shared.utx", "stock shared");
+using (var store = new MapStore(lostRoot, client))
+{
+    await store.EnableAsync(a, false, null, default, replaceGameFiles: true);File.Delete(Path.Combine(store.DataRoot, "Cache", stockHash + ".blob"));
+    await store.DisableAsync(a, default);
+    Check(store.Status(a) == "Disabled" && Read(lostRoot, "Packages/Textures/Shared.utx") == "shared-v1", "disabling still works when the cached original is gone");
+}
+
+// Repairing installs changed by earlier versions
+var repairRoot = Fixture("repair-game-files");Put(repairRoot, "Packages/Textures/Shared.utx", "stock shared");Put(repairRoot, "System/Reloaded.Core.dll", "unpatched runtime");
+using (var store = new MapStore(repairRoot, client))
+{
+    await store.EnableAsync(a, false, null, default, replaceGameFiles: true);
+    var runtimeBackups = Path.Combine(store.DataRoot, "Backups", "Runtime");Directory.CreateDirectory(runtimeBackups);
+    File.WriteAllText(Path.Combine(runtimeBackups, $"2026-09-16_10-00-00-000_{new string('0', 32)}_{new string('b', 64)}.dll"), "older runtime");
+}
+// Earlier versions neither remembered nor cached the original; only the journal backup holds it.
+var repairState = Path.Combine(repairRoot, "System/SCCTMapManagerData/state.json");
+var repairJson = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(repairState))!.AsObject();repairJson.Remove("Originals");File.WriteAllText(repairState, repairJson.ToJsonString());
+File.Delete(Path.Combine(repairRoot, "System/SCCTMapManagerData/Cache", stockHash + ".blob"));
+using (var store = new MapStore(repairRoot, client))
+{
+    var found = await store.FindReplacedGameFilesAsync(default);
+    Check(found.Count == 1 && found[0].Path == "Packages/Textures/Shared.utx" && found[0].Original == stockHash, "repair finds game files replaced by earlier versions and ignores maps and DLLs it did not patch");
+    await store.RestoreGameFilesAsync(found, default);
+    Check(Read(repairRoot, "Packages/Textures/Shared.utx") == "stock shared" && store.State.Originals.ContainsKey("Packages/Textures/Shared.utx"), "repair puts the originals back and remembers them");
+    Check((await store.FindReplacedGameFilesAsync(default)).Count == 0, "a repaired install has nothing left to restore");
+    Check(await AsksFirst(() => store.EnableAsync(a, false, null, default)), "repairing an enabled map asks before replacing the original again");
+}
+var managedRoot = Fixture("repair-managed-files");
+using (var store = new MapStore(managedRoot, client))
+{
+    await store.EnableAsync(a, false, null, default);await store.DisableAsync(a, default);
+    await store.EnableAsync(client.Map("enhanced/C", "Charlie", "charlie", "shared-v2"), false, null, default);
+    Check((await store.FindReplacedGameFilesAsync(default)).Count == 0, "files the manager installed itself are not mistaken for game files");
+}
+var runtimeArg = Array.IndexOf(args, "--patched-runtime");
+if (runtimeArg >= 0)
+{
+    var patched = Path.GetFullPath(args[runtimeArg + 1]);var runtimeRoot = Fixture("repair-runtime");
+    File.Copy(patched, Path.Combine(runtimeRoot, "System", "Reloaded.Core.dll"));
+    using var store = new MapStore(runtimeRoot, client);
+    var runtimeBackups = Path.Combine(store.DataRoot, "Backups", "Runtime");Directory.CreateDirectory(runtimeBackups);
+    var original = Path.Combine(output, "original-runtime.dll");File.WriteAllText(original, "original runtime");
+    string Sha(string path) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant();
+    File.Copy(original, Path.Combine(runtimeBackups, $"2026-09-16_10-00-00-000_{new string('0', 32)}_{Sha(original)}.dll"));
+    File.Copy(patched, Path.Combine(runtimeBackups, $"2026-09-17_10-00-00-000_{new string('1', 32)}_{MapStore.PatchedRuntimeHash}.dll"));
+    var found = await store.FindReplacedGameFilesAsync(default);
+    Check(found.Single().Path == MapStore.RuntimePath, "repair finds the patched DLL installed by earlier versions");
+    await store.RestoreGameFilesAsync(found, default);
+    Check(File.ReadAllText(Path.Combine(runtimeRoot, "System", "Reloaded.Core.dll")) == "original runtime", "repair puts back the DLL the patch replaced");
 }
 
 // Self-updater

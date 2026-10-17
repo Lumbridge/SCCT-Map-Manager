@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace MapManager.Core;
 
@@ -15,12 +17,27 @@ public sealed class StoreState
     public int Format { get; set; } = 1;
     public Dictionary<string, MapEntry> Downloads { get; set; } = new();
     public Dictionary<string, InstalledMap> Installed { get; set; } = new();
+    // Files that were in the game before a map replaced them, by path, with the hash of the original bytes kept in the cache.
+    public Dictionary<string, string> Originals { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 public record Change(string Destination, string? BeforeHash, string? AfterHash);
 public record Journal(string Id, StoreState Before, List<Change> Changes);
 public enum BulkAction { Download, DownloadEditable, Enable }
 public record BulkStep(MapEntry Map, bool Source);
-public record BulkFailure(MapEntry Map, string Message);
+public record BulkFailure(MapEntry Map, string Message)
+{
+    // Files already in the game that the map would replace; the step can be retried once the user agrees.
+    public IReadOnlyList<string> GameFiles { get; init; } = [];
+}
+public record GameFileRestore(string Path, string Current, string Original, string Source);
+// Thrown before anything changes when a map would replace files that came with the game or were already installed.
+// Servers check these files, so a replaced copy can stop the player joining servers that use the original.
+public sealed class GameFileReplacementException(IReadOnlyList<string> paths) : IOException(
+    "This would replace files already in your game: " + string.Join(", ", paths.Take(5)) + (paths.Count > 5 ? $" and {paths.Count - 5} more" : "") +
+    ". Servers that use the original files may refuse to let you join while they are replaced.")
+{
+    public IReadOnlyList<string> Paths { get; } = paths;
+}
 
 public sealed class MapStore : IDisposable
 {
@@ -113,7 +130,7 @@ public sealed class MapStore : IDisposable
         _ => maps.Where(m => !m.IsAssetPack && !IsPlayable(m)).Select(m => new BulkStep(DefaultVersion(m), IncludesSource(m))).ToList()
     };
     // Runs every step even when some fail, so one conflicting map does not stop the rest; cancellation stops the batch.
-    public async Task<List<BulkFailure>> RunBulkAsync(IReadOnlyList<BulkStep> steps, BulkAction action, IProgress<TransferProgress>? progress, CancellationToken cancel)
+    public async Task<List<BulkFailure>> RunBulkAsync(IReadOnlyList<BulkStep> steps, BulkAction action, IProgress<TransferProgress>? progress, CancellationToken cancel, bool replaceGameFiles = false)
     {
         var failures = new List<BulkFailure>();
         for (int i = 0; i < steps.Count; i++)
@@ -124,9 +141,10 @@ public sealed class MapStore : IDisposable
             step?.Report(new TransferProgress(action == BulkAction.Enable ? "Enabling" : "Downloading", 0, 0));
             try
             {
-                if (action == BulkAction.Enable) await EnableVersionAsync(map, source, step, cancel);
-                else await DownloadAsync(map, source, step, cancel);
+                if (action == BulkAction.Enable) await EnableVersionAsync(map, source, step, cancel, replaceGameFiles);
+                else await DownloadAsync(map, source, step, cancel, replaceGameFiles);
             }
+            catch (GameFileReplacementException ex) { failures.Add(new BulkFailure(map, ex.Message) { GameFiles = ex.Paths }); }
             catch (Exception ex) when (ex is not OperationCanceledException) { failures.Add(new BulkFailure(map, ex.Message)); }
         }
         return failures;
@@ -136,14 +154,15 @@ public sealed class MapStore : IDisposable
         public void Report(TransferProgress value) => inner.Report(value with { Message = prefix + value.Message });
     }
     // Re-enables the disabled copy byte for byte when it is the chosen version; otherwise installs the chosen version.
-    public async Task EnableVersionAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel)
+    public async Task EnableVersionAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel, bool replaceGameFiles = false)
     {
         if (State.Installed.TryGetValue(map.Id, out var installed) && !installed.Enabled && installed.Entry.Fingerprint == map.Fingerprint &&
             !(installed.External && State.Downloads.ContainsKey(map.Id)))
-            await RestoreDisabledAsync(map, cancel);
-        else await EnableAsync(map, source, progress, cancel);
+            await RestoreDisabledAsync(map, cancel, replaceGameFiles);
+        else await EnableAsync(map, source, progress, cancel, replaceGameFiles);
     }
-    public async Task DownloadAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel)
+    // replaceGameFiles is the user's agreement to replace files already in the game; without it such installs stop with GameFileReplacementException.
+    public async Task DownloadAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel, bool replaceGameFiles = false)
     {
         await operations.WaitAsync(cancel);
         try
@@ -151,7 +170,7 @@ public sealed class MapStore : IDisposable
             await CacheFiles(map, source, progress, cancel);
             // Updating an enabled map keeps it enabled; a downloaded/disabled map stays off.
             if (State.Installed.TryGetValue(map.Id, out var active) && active.Enabled)
-                EnableCached(map, source, cancel);
+                EnableCached(map, source, cancel, replaceGameFiles);
             else
             {
                 var next = Clone(State);next.Downloads[map.Id] = map;Save("state.json", next);State = next;
@@ -180,13 +199,13 @@ public sealed class MapStore : IDisposable
             progress?.Report(new TransferProgress("Verified " + Path.GetFileName(file.Destination), ++done, files.Count));
         }
     }
-    public async Task EnableAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel)
+    public async Task EnableAsync(MapEntry map, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel, bool replaceGameFiles = false)
     {
         await operations.WaitAsync(cancel);
         try
         {
             guard(); await CacheFiles(map, source, progress, cancel);
-            EnableCached(map, source, cancel);
+            EnableCached(map, source, cancel, replaceGameFiles);
         }
         finally { operations.Release(); }
     }
@@ -196,17 +215,36 @@ public sealed class MapStore : IDisposable
         state.Installed = state.Installed.ToDictionary(p => PortLayout.CanonicalId(p.Key), p => p.Value);
         foreach (var map in state.Installed.Values) map.Entry = PortLayout.Normalize(map.Entry);
         foreach (var map in state.Installed.Values) map.Files = new Dictionary<string, string>(map.Files, StringComparer.OrdinalIgnoreCase);
+        state.Originals = new Dictionary<string, string>(state.Originals ?? new(), StringComparer.OrdinalIgnoreCase);
         return state;
     }
     private static StoreState Clone(StoreState state) => Normalize(JsonSerializer.Deserialize<StoreState>(JsonSerializer.Serialize(state))!);
     private bool KnownDisabledFile(string path, string hash) => State.Installed.Values.Any(m => !m.Enabled && m.Files.TryGetValue(path, out var owned) && owned == hash);
-    private void EnableCached(MapEntry map, bool source, CancellationToken cancel)
+    private bool Ours(string path, string hash) => State.Installed.Values.Any(m => m.Files.TryGetValue(path, out var owned) && owned == hash);
+    private bool IsOriginal(string path, string? hash) => hash != null && State.Originals.TryGetValue(path, out var original) && original == hash;
+    // A replaced game file goes back once no other enabled map uses its path, as long as the manager's bytes are still there.
+    // Without an intact cached original the file is left as it is, so disabling never fails over it.
+    private string? PutBack(string path, string mapId, string? current) =>
+        current != null && State.Originals.TryGetValue(path, out var original) && original != current && Ours(path, current) &&
+        !State.Installed.Any(p => p.Key != mapId && p.Value.Enabled && p.Value.Files.ContainsKey(path)) &&
+        File.Exists(Cache(original)) && Hashing.GitBlob(Cache(original)) == original ? original : null;
+    // Keeps the game's own bytes in the cache so disabling the map can put them back.
+    private void KeepOriginals(List<(string Path, string Hash)> replaced, StoreState next)
+    {
+        foreach (var (path, hash) in replaced)
+        {
+            var cache = Cache(hash);Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+            if (!File.Exists(cache)) File.Copy(SafePaths.Under(GameRoot, path), cache);
+            next.Originals[path] = hash;
+        }
+    }
+    private void EnableCached(MapEntry map, bool source, CancellationToken cancel, bool replaceGameFiles)
     {
         guard();var desired = map.InstallFiles(source);State.Installed.TryGetValue(map.Id, out var old);
         // Source maps installed explicitly stay protected when the checkbox is off.
         var owned = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (old != null) foreach (var file in old.Files.Where(f => !source && f.Key.StartsWith("Packages/MapsEd/", StringComparison.OrdinalIgnoreCase))) owned[file.Key] = file.Value;
-        var changes = new List<Change>();
+        var changes = new List<Change>();var replaced = new List<(string Path, string Hash)>();
         foreach (var retained in owned)
         {
             var dest = SafePaths.Under(GameRoot, retained.Key);
@@ -223,21 +261,29 @@ public sealed class MapStore : IDisposable
             foreach (var other in State.Installed.Where(p => p.Key != map.Id && p.Value.Enabled))
                 if (other.Value.Files.TryGetValue(file.Destination, out var hash) && (hash != file.Hash || map.IsActivationFile(file.Destination)))
                     throw new IOException($"{other.Value.Entry.Name} ({other.Value.Entry.Category}) uses {file.Destination}. Disable that map before switching versions.");
-            if (old != null && old.Files.TryGetValue(file.Destination, out var previous) && current != null && current != previous && current != file.Hash && !KnownDisabledFile(file.Destination, current))
+            bool original = IsOriginal(file.Destination, current);
+            if (old != null && old.Files.TryGetValue(file.Destination, out var previous) && current != null && current != previous && current != file.Hash && !KnownDisabledFile(file.Destination, current) && !original)
                 throw new IOException("Local changes were detected in " + file.Destination + ". Move your edited copy somewhere safe before updating.");
+            // Files the game already had, or that came from elsewhere, are replaced only with the user's agreement.
+            if (!map.IsAssetPack && current != null && current != file.Hash && (original || !Ours(file.Destination, current))) replaced.Add((file.Destination, current));
             owned[file.Destination] = file.Hash;
             if (current != file.Hash) changes.Add(new Change(file.Destination, current, file.Hash));
         }
+        if (replaced.Count > 0 && !replaceGameFiles) throw new GameFileReplacementException(replaced.Select(r => r.Path).ToList());
         if (old != null)
         {
-            foreach (var obsolete in old.Files.Where(f => !owned.ContainsKey(f.Key) && old.Entry.IsActivationFile(f.Key)))
+            foreach (var obsolete in old.Files.Where(f => !owned.ContainsKey(f.Key)))
             {
+                bool activation = old.Entry.IsActivationFile(obsolete.Key);
+                if (!activation && !State.Originals.ContainsKey(obsolete.Key)) continue;
                 var dest = SafePaths.Under(GameRoot, obsolete.Key);var current = File.Exists(dest) ? Hashing.GitBlob(dest) : null;
-                if (current != null && current != obsolete.Value) throw new IOException("Local changes were detected in " + obsolete.Key);
-                if (current != null) changes.Add(new Change(obsolete.Key, current, null));
+                if (activation && current != null && current != obsolete.Value) throw new IOException("Local changes were detected in " + obsolete.Key);
+                if (activation && current != null) changes.Add(new Change(obsolete.Key, current, PutBack(obsolete.Key, map.Id, current)));
+                else if (PutBack(obsolete.Key, map.Id, current) is { } restored) changes.Add(new Change(obsolete.Key, current, restored));
             }
         }
         var next = Clone(State);next.Downloads[map.Id] = map;next.Installed[map.Id] = new InstalledMap { Entry = map, Enabled = true, IncludeSource = source || old?.IncludeSource == true, Files = owned };
+        KeepOriginals(replaced, next);
         Execute(changes, next, cancel);
     }
     public async Task DisableAsync(MapEntry map, CancellationToken cancel)
@@ -261,31 +307,110 @@ public sealed class MapStore : IDisposable
                 if (State.Installed.Any(p => p.Key != map.Id && p.Value.Enabled && p.Value.Files.ContainsKey(relative))) throw new IOException("Another enabled map owns " + relative);
                 files[relative] = hash; var cache = Cache(hash);Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
                 if (!File.Exists(cache)) File.Copy(path, cache);
-                changes.Add(new Change(relative, hash, null));
+                changes.Add(new Change(relative, hash, old != null ? PutBack(relative, map.Id, hash) : null));
             }
             if (old == null && changes.Count == 0) throw new IOException("This map is not installed.");
+            // Game files the map replaced go back unless another enabled map still uses them.
+            if (old != null)
+                foreach (var relative in old.Files.Keys.Where(p => !installedEntry.IsActivationFile(p) && State.Originals.ContainsKey(p)))
+                {
+                    var path = SafePaths.Under(GameRoot, relative);var current = File.Exists(path) ? Hashing.GitBlob(path) : null;
+                    if (PutBack(relative, map.Id, current) is { } restored) changes.Add(new Change(relative, current, restored));
+                }
             var next = Clone(State);
             next.Installed[map.Id] = new InstalledMap { Entry = installedEntry, Enabled = false, External = old?.External ?? true, IncludeSource = old?.IncludeSource ?? false, Files = new Dictionary<string, string>(files, StringComparer.OrdinalIgnoreCase) };
             Execute(changes, next, cancel);
         }
         finally { operations.Release(); }
     }
-    public async Task RestoreDisabledAsync(MapEntry map, CancellationToken cancel)
+    public async Task RestoreDisabledAsync(MapEntry map, CancellationToken cancel, bool replaceGameFiles = false)
     {
         await operations.WaitAsync(cancel);
         try
         {
             guard();var old = State.Installed[map.Id];if (old.Enabled) return;
-            var changes = new List<Change>();
+            var changes = new List<Change>();var replaced = new List<string>();
             foreach (var file in old.Files)
             {
                 var path = SafePaths.Under(GameRoot, file.Key);var current = File.Exists(path) ? Hashing.GitBlob(path) : null;
-                if (current != null && current != file.Value && (old.Entry.IsActivationFile(file.Key) || !KnownDisabledFile(file.Key, current)))
+                // The game's own file, put back when the map was disabled, is replaced again only with the user's agreement.
+                bool original = IsOriginal(file.Key, current);
+                if (current != null && current != file.Value && !original && (old.Entry.IsActivationFile(file.Key) || !KnownDisabledFile(file.Key, current)))
                     throw new IOException("Another file is now installed at " + file.Key + ". Preserve any local edits and disable its map before switching.");
                 if (State.Installed.Any(p => p.Key != map.Id && p.Value.Enabled && p.Value.Files.TryGetValue(file.Key, out var hash) && (hash != file.Value || old.Entry.IsActivationFile(file.Key)))) throw new IOException("Another enabled map owns " + file.Key);
+                if (original && current != file.Value) replaced.Add(file.Key);
                 if (current != file.Value) changes.Add(new Change(file.Key, current, file.Value));
             }
+            if (replaced.Count > 0 && !replaceGameFiles) throw new GameFileReplacementException(replaced);
             var next = Clone(State);next.Installed[map.Id].Enabled = true;Execute(changes, next, cancel);
+        }
+        finally { operations.Release(); }
+    }
+    // SHA-256 of the Reloaded.Core.dll that manager v0.2.0 to v0.4.5 could install; those versions kept the replaced DLL in Backups/Runtime.
+    public const string PatchedRuntimeHash = "95e3f812a58d03fde82983d397183dc3fb87da85a663cafac766c8d28ace866d";
+    public const string RuntimePath = "System/Reloaded.Core.dll";
+    private static string Sha256(string path) { using var file = File.OpenRead(path); return Convert.ToHexString(SHA256.HashData(file)).ToLowerInvariant(); }
+    // Finds game files that earlier versions replaced without asking and that still hold the manager's bytes.
+    // The original is the oldest backup of the path that is not something the manager installed itself.
+    public async Task<List<GameFileRestore>> FindReplacedGameFilesAsync(CancellationToken cancel)
+    {
+        await operations.WaitAsync(cancel);
+        try
+        {
+            var found = new List<GameFileRestore>();
+            var backups = SafePaths.Under(DataRoot, "Backups");
+            if (!Directory.Exists(backups)) return found;
+            bool Managers(string path, string hash) => !IsOriginal(path, hash) && (Ours(path, hash) || File.Exists(Cache(hash)));
+            var originals = new Dictionary<string, (string Hash, string Source)>(StringComparer.OrdinalIgnoreCase);
+            foreach (var journal in Directory.EnumerateDirectories(backups).Where(d => Regex.IsMatch(Path.GetFileName(d), "^[0-9]{8}-[0-9]{6}-[0-9a-f]{32}$")).Order(StringComparer.Ordinal))
+                foreach (var file in Directory.EnumerateFiles(journal, "*", SearchOption.AllDirectories))
+                {
+                    cancel.ThrowIfCancellationRequested();
+                    var relative = Path.GetRelativePath(journal, file).Replace('\\', '/');
+                    // Map packages and menu entries belong to their maps, which put them back when disabled.
+                    if (originals.ContainsKey(relative) || !SafePaths.IsMapAsset(relative) || relative.StartsWith("Packages/Maps", StringComparison.OrdinalIgnoreCase)
+                        || relative.EndsWith("-i.utc", StringComparison.OrdinalIgnoreCase)) continue;
+                    var hash = Hashing.GitBlob(file);
+                    if (!Managers(relative, hash)) originals[relative] = (hash, file);
+                }
+            foreach (var (relative, original) in originals)
+            {
+                var path = SafePaths.Under(GameRoot, relative);var current = File.Exists(path) ? Hashing.GitBlob(path) : null;
+                if (current != null && current != original.Hash && Managers(relative, current)) found.Add(new GameFileRestore(relative, current, original.Hash, original.Source));
+            }
+            var runtime = SafePaths.Under(GameRoot, RuntimePath);var runtimeBackups = SafePaths.Under(DataRoot, "Backups/Runtime");
+            if (File.Exists(runtime) && Directory.Exists(runtimeBackups) && Sha256(runtime) == PatchedRuntimeHash)
+            {
+                // Backups are named <UTC time>_<id>_<SHA-256>.dll, so the oldest one that is not the patch is the game's own DLL.
+                var original = Directory.EnumerateFiles(runtimeBackups, "*.dll").Select(f => (File: f, Name: Path.GetFileName(f)))
+                    .Where(b => b.Name.Length == 125 && b.Name[57..121] != PatchedRuntimeHash).OrderBy(b => b.Name, StringComparer.Ordinal)
+                    .FirstOrDefault(b => Sha256(b.File) == b.Name[57..121]).File;
+                if (original != null) found.Add(new GameFileRestore(RuntimePath, Hashing.GitBlob(runtime), Hashing.GitBlob(original), original));
+            }
+            return found;
+        }
+        finally { operations.Release(); }
+    }
+    public async Task RestoreGameFilesAsync(IReadOnlyList<GameFileRestore> restores, CancellationToken cancel)
+    {
+        await operations.WaitAsync(cancel);
+        try
+        {
+            guard();var changes = new List<Change>();var next = Clone(State);
+            var backups = SafePaths.Under(DataRoot, "Backups") + Path.DirectorySeparatorChar;
+            foreach (var restore in restores)
+            {
+                if (restore.Path != RuntimePath && !SafePaths.IsMapAsset(restore.Path)) throw new InvalidDataException("Unsupported game file: " + restore.Path);
+                var source = Path.GetFullPath(restore.Source);
+                if (!source.StartsWith(backups, StringComparison.OrdinalIgnoreCase) || !File.Exists(source) || Hashing.GitBlob(source) != restore.Original)
+                    throw new IOException("The backup of " + restore.Path + " is missing or changed.");
+                var cache = Cache(restore.Original);Directory.CreateDirectory(Path.GetDirectoryName(cache)!);
+                if (!File.Exists(cache) || Hashing.GitBlob(cache) != restore.Original) File.Copy(source, cache, true);
+                changes.Add(new Change(restore.Path, restore.Current, restore.Original));
+                // Recorded so enabling a map that needs the replacement asks first, and disabling it puts the original back.
+                if (restore.Path != RuntimePath) next.Originals[restore.Path] = restore.Original;
+            }
+            Execute(changes, next, cancel);
         }
         finally { operations.Release(); }
     }

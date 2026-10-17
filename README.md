@@ -26,6 +26,12 @@ The manager checks for new versions when it starts. When one is available, an **
 
 Close the game and the editor before enabling, disabling or updating maps. Everyone on a server needs the same map files.
 
+### Game files and servers
+
+Some maps bring their own copies of files your game already has. Servers check those files, so a replaced copy can stop you joining servers that use the original. Before a map replaces any file that is already in your game, the manager lists the files and asks. It keeps the originals and puts them back when you disable the last map that needs them.
+
+Earlier versions replaced these files without asking, and v0.4.5 and earlier could also patch `System/Reloaded.Core.dll`. **Tools → Restore original game files** finds those changes and puts the originals back from the backups.
+
 ### Textures and static meshes
 
 **Tools → Textures & static meshes** lists optional asset packs for map makers, such as the converted Rainbow Six Vegas meshes. Install or update them like maps. Packs stay installed because maps may depend on them.
