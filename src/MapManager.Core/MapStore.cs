@@ -23,6 +23,7 @@ public sealed class StoreState
 public record Change(string Destination, string? BeforeHash, string? AfterHash);
 public record Journal(string Id, StoreState Before, List<Change> Changes);
 public enum BulkAction { Download, DownloadEditable, Enable }
+public enum MapAction { Enable, Restore, UpdateAndEnable, Update, Switch, Repair, UpToDate }
 public record BulkStep(MapEntry Map, bool Source);
 public record BulkFailure(MapEntry Map, string Message)
 {
@@ -115,7 +116,51 @@ public sealed class MapStore : IDisposable
     }
     public bool CanDisable(MapEntry map) => !map.IsAssetPack && (State.Installed.TryGetValue(map.Id, out var m) ? m.Enabled : map.Files.Any(f => f.Destination.StartsWith("Packages/Maps/") && File.Exists(SafePaths.Under(GameRoot, f.Destination))));
     private static bool DifferentVersion(MapEntry saved, MapEntry available) => saved.Fingerprint != available.Fingerprint || (available.IsAssetPack && saved.Version != available.Version);
-    public bool HasUpdate(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) ? DifferentVersion(m.Entry, map) : State.Downloads.TryGetValue(map.Id, out var d) && DifferentVersion(d, map);
+    // A disabled map whose newest version is already downloaded has nothing left to fetch; copies installed outside the manager are never offered updates.
+    public bool HasUpdate(MapEntry map)
+    {
+        if (State.Installed.TryGetValue(map.Id, out var m))
+        {
+            if (m.External) return false;
+            if (!m.Enabled && State.Downloads.TryGetValue(map.Id, out var ready)) return DifferentVersion(ready, map);
+            return DifferentVersion(m.Entry, map);
+        }
+        return State.Downloads.TryGetValue(map.Id, out var d) && DifferentVersion(d, map);
+    }
+    // Maps in the catalog with a newer version than the one the user has.
+    public IReadOnlyList<MapEntry> PendingUpdates() => (Catalog?.Maps ?? []).Where(m => !m.IsAssetPack && HasUpdate(m)).ToList();
+    // The one thing the main button should do for a map, given the newest release and the version the user picked.
+    public MapAction PrimaryAction(MapEntry latest, MapEntry chosen)
+    {
+        bool isLatest = !DifferentVersion(chosen, latest) && chosen.Version == latest.Version;
+        if (State.Installed.TryGetValue(latest.Id, out var installed))
+        {
+            bool same = !DifferentVersion(installed.Entry, chosen);
+            if (installed.Enabled)
+            {
+                if (same) return Status(latest) == "Files missing" ? MapAction.Repair : MapAction.UpToDate;
+                // A copy installed outside the manager is replaced, not "updated".
+                return isLatest && !installed.External ? MapAction.Update : MapAction.Switch;
+            }
+            if (same && !(installed.External && State.Downloads.ContainsKey(latest.Id))) return MapAction.Restore;
+            return isLatest && !installed.External ? MapAction.UpdateAndEnable : MapAction.Enable;
+        }
+        return isLatest && State.Downloads.TryGetValue(latest.Id, out var saved) && DifferentVersion(saved, chosen) ? MapAction.UpdateAndEnable : MapAction.Enable;
+    }
+    // Runs the main action. Everything except re-enabling a disabled copy installs the chosen version.
+    public Task ApplyAsync(MapAction action, MapEntry chosen, bool source, IProgress<TransferProgress>? progress, CancellationToken cancel, bool replaceGameFiles = false) => action switch
+    {
+        MapAction.UpToDate => Task.CompletedTask,
+        MapAction.Restore => RestoreDisabledAsync(chosen, cancel, replaceGameFiles),
+        _ => EnableAsync(chosen, source, progress, cancel, replaceGameFiles)
+    };
+    // Brings every listed map to its newest version: enabled maps are replaced in place, others are downloaded ready for later.
+    // One map failing (for example because of local edits) does not stop the rest.
+    public Task<List<BulkFailure>> UpdateAllAsync(IReadOnlyList<MapEntry> maps, IProgress<TransferProgress>? progress, CancellationToken cancel, bool replaceGameFiles = false)
+    {
+        guard();
+        return RunBulkAsync(maps.Select(m => new BulkStep(m, IncludesSource(m))).ToList(), BulkAction.Download, progress, cancel, replaceGameFiles);
+    }
     // The version a map acts on when none is picked: the downloaded or installed build, else the newest.
     public MapEntry DefaultVersion(MapEntry map) => State.Downloads.TryGetValue(map.Id, out var saved) ? saved : State.Installed.TryGetValue(map.Id, out var m) ? m.Entry : map;
     public bool IncludesSource(MapEntry map) => State.Installed.TryGetValue(map.Id, out var m) && m.IncludeSource;

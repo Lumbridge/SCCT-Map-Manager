@@ -486,6 +486,65 @@ if (runtimeArg >= 0)
     Check(File.ReadAllText(Path.Combine(runtimeRoot, "System", "Reloaded.Core.dll")) == "original runtime", "repair puts back the DLL the patch replaced");
 }
 
+// Main action button
+var actionRoot = Fixture("main-action");
+using (var store = new MapStore(actionRoot, client))
+{
+    Check(store.PrimaryAction(update, update) == MapAction.Enable && store.PrimaryAction(update, a) == MapAction.Enable, "a map that is not downloaded offers Enable");
+    await store.DownloadAsync(a, false, null, default);
+    Check(store.HasUpdate(update) && store.PrimaryAction(update, update) == MapAction.UpdateAndEnable && store.PrimaryAction(update, a) == MapAction.Enable,
+        "an outdated download offers Update & enable for the newest version");
+    await store.ApplyAsync(store.PrimaryAction(update, a), a, false, null, default);
+    Check(store.PrimaryAction(update, update) == MapAction.Update && store.PrimaryAction(update, a) == MapAction.UpToDate, "an enabled outdated map offers Update");
+    await store.ApplyAsync(store.PrimaryAction(update, update), update, false, null, default);
+    Check(Read(actionRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2" && store.State.Installed[a.Id].Enabled && !store.HasUpdate(update), "Update replaces the enabled map and keeps it enabled");
+    Check(store.PrimaryAction(update, update) == MapAction.UpToDate && store.PrimaryAction(update, a) == MapAction.Switch, "an up-to-date map offers nothing, an older pick offers Switch");
+    File.Delete(Path.Combine(actionRoot, "Packages/Maps/Alpha.sdc"));
+    Check(store.PrimaryAction(update, update) == MapAction.Repair, "missing files offer Repair");
+    await store.ApplyAsync(MapAction.Repair, update, false, null, default);
+    Check(Read(actionRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2", "Repair puts the files back");
+    await store.DisableAsync(update, default);
+    Check(store.PrimaryAction(update, update) == MapAction.Restore, "a disabled map offers Enable for its own version");
+    client.Offline = true;await store.ApplyAsync(MapAction.Restore, update, false, null, default);client.Offline = false;
+    Check(Read(actionRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2" && store.State.Installed[a.Id].Enabled, "re-enabling a disabled map works offline");
+    await store.EnableAsync(a, false, null, default);await store.DisableAsync(a, default);
+    Check(store.HasUpdate(update) && store.PrimaryAction(update, update) == MapAction.UpdateAndEnable, "a disabled outdated map offers Update & enable");
+    await store.DownloadAsync(update, false, null, default);
+    Check(!store.HasUpdate(update) && store.Status(update) == "Disabled • update ready" && store.PrimaryAction(update, update) == MapAction.UpdateAndEnable,
+        "downloading the update for a disabled map clears the update notice but still offers to enable it");
+}
+var externalUpdateRoot = Fixture("external-no-update");Put(externalUpdateRoot, "Packages/Maps/Alpha.sdc", "existing custom build");
+using (var store = new MapStore(externalUpdateRoot, client))
+{
+    await store.DisableAsync(a, default);await store.RestoreDisabledAsync(a, default);
+    Check(!store.HasUpdate(update) && store.PrimaryAction(update, update) == MapAction.Switch && store.PrimaryAction(a, a) == MapAction.UpToDate,
+        "copies installed outside the manager are not flagged as updates, but can be switched to a repository version");
+}
+
+// Update all
+var bravoUpdate = client.Map("community/B", "Bravo", "bravo-v2", "shared-v1");
+var allRoot = Fixture("update-all");
+using (var store = new MapStore(allRoot, client))
+{
+    await store.EnableAsync(a, true, null, default);await store.DownloadAsync(b, false, null, default);
+    store.UseFallbackCatalog(new Catalog(a.Commit, DateTimeOffset.UtcNow, [update, bravoUpdate, client.Map("enhanced/C", "Charlie", "charlie", "shared-v1")]));
+    Check(store.PendingUpdates().Select(m => m.Id).SequenceEqual(new[] { a.Id, b.Id }), "pending updates list only maps the user has, with a newer release");
+    var messages = new List<string>();
+    var failed = await store.UpdateAllAsync(store.PendingUpdates(), new SyncProgress(p => messages.Add(p.Message)), default);
+    Check(failed.Count == 0 && store.PendingUpdates().Count == 0, "update all leaves nothing pending");
+    Check(Read(allRoot, "Packages/Maps/Alpha.sdc") == "alpha-v2" && Read(allRoot, "Packages/MapsEd/Alpha.sdc") == "source alpha-v2" && store.State.Installed[a.Id].Enabled,
+        "update all replaces enabled maps in place, including their editable source");
+    Check(store.State.Downloads[b.Id].Fingerprint == bravoUpdate.Fingerprint && !File.Exists(Path.Combine(allRoot, "Packages/Maps/Bravo.sdc")), "update all only downloads maps that are not enabled");
+    Check(messages.Any(m => m.StartsWith("1 of 2 • Alpha")) && messages.Any(m => m.StartsWith("2 of 2 • Bravo")), "update all reports which map it is on");
+    var alphaV3 = client.Map("original/A", "Alpha", "alpha-v3", "shared-v1", true);var bravoV3 = client.Map("community/B", "Bravo", "bravo-v3", "shared-v1");
+    Put(allRoot, "Packages/Maps/Alpha.sdc", "local playable changes");
+    failed = await store.UpdateAllAsync([alphaV3, bravoV3], null, default);
+    Check(failed.Count == 1 && failed[0].Map.Id == a.Id && Read(allRoot, "Packages/Maps/Alpha.sdc") == "local playable changes" && store.State.Downloads[b.Id].Fingerprint == bravoV3.Fingerprint,
+        "one map with local edits is skipped and the rest still update");
+}
+using (var store = new MapStore(Fixture("update-all-guard"), client, () => throw new IOException("game running")))
+    await Reject(() => store.UpdateAllAsync([update], null, default), "update all stops before starting while the game is running");
+
 // Self-updater
 string ReleaseJson(string tag, string exeUrl, string? digest = null, bool sums = true, bool prerelease = false)
 {

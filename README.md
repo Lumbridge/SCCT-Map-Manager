@@ -16,10 +16,11 @@ The manager checks for new versions when it starts. When one is available, an **
 
 ## Using it
 
-- Pick a map from the list (search or filter by collection) and press **Enable map**. It downloads, verifies and installs the map.
+- Pick a map from the list (search or filter by collection) and press the main button. It changes to fit the map: **Enable map** downloads, verifies and installs it; **Update to vX** installs a newer release; **Repair map** puts back missing files.
 - **Disable map** takes it out of play; enable it again any time.
-- **Download map** just saves it for later, or updates an installed map.
-- Use **Version** to choose an older release of a map, for example to match a server. Enable or download installs that version; the list shows the newest version and the one you have.
+- **More** holds the less common actions: **Download for later** saves a map without enabling it, and **Reinstall files** installs the enabled version again.
+- When maps you have get a new version, a yellow bar above the list says how many. **Update all** updates them in one go (enabled maps are replaced, others are downloaded ready for later); **Show which** lists them. Outdated maps show their versions as `v1.2 → v1.5` in the list.
+- Use **Version** to choose an older release of a map, for example to match a server. The main button then offers to enable or switch to that version.
 - Tick **Include editable source maps** if you also want the editor (`MapsEd`) files.
 - Select several maps with Ctrl+click, Shift+click or Ctrl+A to **Enable all**, **Download all** or **Download all editable versions** at once. Enable all leaves maps that are already enabled as they are; if some maps cannot be changed, for example because they need a different version of a shared file, the rest still go ahead and the manager lists the ones it skipped.
 - **Change folder** switches to another game installation.

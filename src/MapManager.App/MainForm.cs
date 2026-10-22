@@ -7,6 +7,7 @@ public sealed class MainForm : Form
 {
     private static readonly string AppVersion = Program.VersionText;
     private static readonly Color Ink = Color.FromArgb(28, 39, 54), Accent = Color.FromArgb(0, 104, 118), Pale = Color.FromArgb(241, 245, 249);
+    private static readonly Color UpdateBack = Color.FromArgb(255, 243, 205), UpdateInk = Color.FromArgb(146, 64, 14);
     private readonly IRepositoryClient repository;
     private readonly AppUpdater? updater;
     private readonly ToolStripMenuItem updateItem = new() { Visible = false, Alignment = ToolStripItemAlignment.Right, ForeColor = Color.White, BackColor = Accent };
@@ -25,7 +26,15 @@ public sealed class MainForm : Form
     private readonly Label metadata = new() { AutoSize = true, MaximumSize = new Size(360, 0), ForeColor = Color.DimGray };
     private readonly Label summary = new() { AutoSize = true, MaximumSize = new Size(360, 0) };
     private readonly CheckBox source = new() { AutoSize = true, Text = "Include editable source maps (MapsEd)" };
-    private readonly Button download = Button("Download / update"), enable = Button("Enable map", true), disable = Button("Disable map"), refresh = Button("Refresh"), folder = Button("Change folder");
+    // One main button does the next sensible thing for the selected map; rarer actions live in the More menu.
+    private readonly Button primary = Button("Enable map", true), disable = Button("Disable map"), more = Button("More ▾"), refresh = Button("Refresh"), folder = Button("Change folder");
+    private readonly ContextMenuStrip moreMenu = new();
+    private readonly ToolStripMenuItem downloadLater = new("Download for later"), reinstall = new("Reinstall files");
+    private MapAction primaryAction;
+    private readonly Label updateNotice = new() { AutoSize = true, MaximumSize = new Size(360, 0), BackColor = UpdateBack, ForeColor = UpdateInk, Padding = new Padding(8, 6, 8, 6), Margin = new Padding(0, 10, 0, 0), Visible = false, UseMnemonic = false };
+    private readonly Label updateBannerText = new() { AutoSize = true, ForeColor = UpdateInk, Margin = new Padding(0, 9, 16, 0), UseMnemonic = false };
+    private readonly Button showUpdates = Button("Show updates"), updateAll = Button("Update all", true);
+    private readonly FlowLayoutPanel updateBanner = new() { Dock = DockStyle.Fill, AutoSize = true, WrapContents = false, BackColor = UpdateBack, Padding = new Padding(12, 6, 12, 0), Margin = new Padding(0, 0, 0, 12), Visible = false };
     private readonly Button backups = Button("Open backups"), repo = Button("Repository"), cancel = Button("Cancel");
     private readonly Button enableAll = Button("Enable all", true), downloadAll = Button("Download all"), downloadEditable = Button("Download all editable versions");
     private readonly FlowLayoutPanel versionRow = new() { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
@@ -94,9 +103,10 @@ public sealed class MainForm : Form
     }
     private void BuildLayout()
     {
-        var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 5, Padding = new Padding(24), BackColor = Pale };
+        var outer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 6, Padding = new Padding(24), BackColor = Pale };
         outer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));Controls.Add(outer);
+        outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));outer.RowStyles.Add(new RowStyle(SizeType.Absolute, 82));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));outer.RowStyles.Add(new RowStyle(SizeType.AutoSize));Controls.Add(outer);
         var header = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 2, Margin = Padding.Empty };
         header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (int i = 0; i < 3; i++) header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
@@ -115,6 +125,9 @@ public sealed class MainForm : Form
         statusFilter.Items.AddRange(["All maps", "Enabled", "Disabled", "Updates available", "Downloaded", "Not downloaded"]);statusFilter.SelectedIndex = 0;
         filters.Controls.Add(new Label { Text = "Search maps", AutoSize = true }, 0, 0);filters.Controls.Add(new Label { Text = "Collection", AutoSize = true }, 1, 0);filters.Controls.Add(new Label { Text = "Show", AutoSize = true }, 2, 0);
         filters.Controls.Add(search, 0, 1);filters.Controls.Add(category, 1, 1);filters.Controls.Add(statusFilter, 2, 1);outer.Controls.Add(filters, 0, 1);
+        // Shown only while some downloaded or enabled maps have a newer release.
+        updateBannerText.Font = new Font(Font, FontStyle.Bold);
+        updateBanner.Controls.Add(updateBannerText);updateBanner.Controls.Add(updateAll);updateBanner.Controls.Add(showUpdates);outer.Controls.Add(updateBanner, 0, 2);
         var split = new SplitContainer { Size = new Size(1200, 580), Dock = DockStyle.Fill, SplitterDistance = 740, FixedPanel = FixedPanel.Panel2, BackColor = Pale, SplitterWidth = 16 };
         split.Panel1MinSize = 440;split.Panel2MinSize = 345;
         grid.ColumnHeadersDefaultCellStyle = new DataGridViewCellStyle { BackColor = Color.FromArgb(229, 236, 240), ForeColor = Ink, Font = new Font(Font, FontStyle.Bold), Padding = new Padding(8) };
@@ -122,23 +135,25 @@ public sealed class MainForm : Form
         grid.EnableHeadersVisualStyles = false;grid.ColumnHeadersHeight = 42;grid.RowTemplate.Height = 42;
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Map", HeaderText = "Map", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 140, FillWeight = 135 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Collection", HeaderText = "Collection", Width = 125 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Version", HeaderText = "Version", Width = 85 });
+        grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Version", HeaderText = "Version", Width = 120 });
         grid.Columns.Add(new DataGridViewTextBoxColumn { Name = "Status", HeaderText = "Status", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, MinimumWidth = 145, FillWeight = 110 });
         foreach (DataGridViewColumn column in grid.Columns) column.SortMode = DataGridViewColumnSortMode.Programmatic;
         split.Panel1.Controls.Add(grid);
-        var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 8, BackColor = Color.White, Padding = new Padding(18) };
-        for (int i = 0; i < 7; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        details.Controls.Add(mapName, 0, 0);details.Controls.Add(metadata, 0, 1);summary.Margin = new Padding(0, 14, 0, 14);details.Controls.Add(summary, 0, 2);
-        versionRow.Controls.Add(new Label { Text = "Version", AutoSize = true, Margin = new Padding(0, 6, 10, 0) });versionRow.Controls.Add(version);details.Controls.Add(versionRow, 0, 3);
-        source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 4);
-        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.AddRange([enable, disable, download, enableAll, downloadAll, downloadEditable]);details.Controls.Add(mapActions, 0, 5);
+        var details = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 9, BackColor = Color.White, Padding = new Padding(18) };
+        for (int i = 0; i < 8; i++) details.RowStyles.Add(new RowStyle(SizeType.AutoSize));details.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        details.Controls.Add(mapName, 0, 0);details.Controls.Add(metadata, 0, 1);updateNotice.Font = new Font(Font, FontStyle.Bold);details.Controls.Add(updateNotice, 0, 2);
+        summary.Margin = new Padding(0, 14, 0, 14);details.Controls.Add(summary, 0, 3);
+        versionRow.Controls.Add(new Label { Text = "Version", AutoSize = true, Margin = new Padding(0, 6, 10, 0) });versionRow.Controls.Add(version);details.Controls.Add(versionRow, 0, 4);
+        source.Margin = new Padding(0, 0, 0, 16);details.Controls.Add(source, 0, 5);
+        primary.UseMnemonic = false;moreMenu.Items.Add(downloadLater);moreMenu.Items.Add(reinstall);
+        var mapActions = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };mapActions.Controls.AddRange([primary, disable, more, enableAll, downloadAll, downloadEditable]);details.Controls.Add(mapActions, 0, 6);
         foreach (var button in new[] { enableAll, downloadAll, downloadEditable }) button.Visible = false;
-        notesTitle.Text = "MAP NOTES & DEPENDENCIES";notesTitle.Font = new Font(Font, FontStyle.Bold);details.Controls.Add(notesTitle, 0, 6);details.Controls.Add(notes, 0, 7);
+        notesTitle.Text = "MAP NOTES & DEPENDENCIES";notesTitle.Font = new Font(Font, FontStyle.Bold);details.Controls.Add(notesTitle, 0, 7);details.Controls.Add(notes, 0, 8);
         details.AutoScroll = true;details.SizeChanged += (_, _) => FitNotes();
-        split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 2);
+        split.Panel2.Controls.Add(details);outer.Controls.Add(split, 0, 3);
         this.details = details;
         var libraryFooter = Table(1, 100);libraryFooter.Padding = new Padding(0, 12, 0, 8);libraryFooter.Controls.Add(count, 0, 0);libraryFooter.Controls.Add(catalogStatus, 0, 1);
-        outer.Controls.Add(libraryFooter, 0, 3);
+        outer.Controls.Add(libraryFooter, 0, 4);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 2, RowCount = 2, Margin = Padding.Empty };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
         footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));footer.RowStyles.Add(new RowStyle(SizeType.Absolute, 8));
@@ -146,18 +161,18 @@ public sealed class MainForm : Form
         cancel.Margin = new Padding(10, 4, 0, 4);cancel.Visible = false;
         progress.Margin = Padding.Empty;progress.Visible = false;
         footer.Controls.Add(operationStatus, 0, 0);footer.Controls.Add(cancel, 1, 0);
-        footer.Controls.Add(progress, 0, 1);footer.SetColumnSpan(progress, 2);outer.Controls.Add(footer, 0, 4);
+        footer.Controls.Add(progress, 0, 1);footer.SetColumnSpan(progress, 2);outer.Controls.Add(footer, 0, 5);
         operationStatus.Text = "Choose a map to download, enable or disable. Ctrl+click or Shift+click to select several.";
     }
     private TableLayoutPanel? details;
     // Keep the notes readable in short windows: give them a minimum height and let the details panel scroll instead.
     private void FitNotes()
     {
-        if (details == null || details.RowStyles.Count < 8 || !details.IsHandleCreated) return;
-        var heights = details.GetRowHeights();
-        if (heights.Length < 8) return;
-        int minimum = LogicalToDeviceUnits(240), available = details.ClientSize.Height - details.Padding.Vertical - heights.Take(7).Sum();
-        var style = details.RowStyles[7];
+        if (details == null || !details.IsHandleCreated) return;
+        int last = details.RowStyles.Count - 1;var heights = details.GetRowHeights();
+        if (heights.Length <= last) return;
+        int minimum = LogicalToDeviceUnits(240), available = details.ClientSize.Height - details.Padding.Vertical - heights.Take(last).Sum();
+        var style = details.RowStyles[last];
         if (available < minimum && style.SizeType != SizeType.Absolute) { style.SizeType = SizeType.Absolute;style.Height = minimum; }
         else if (available >= minimum && style.SizeType == SizeType.Absolute) { style.SizeType = SizeType.Percent;style.Height = 100;details.AutoScrollPosition = Point.Empty; }
     }
@@ -172,14 +187,22 @@ public sealed class MainForm : Form
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
         backups.Click += (_, _) => { var path = SafePaths.Under(store.DataRoot, "Backups");Directory.CreateDirectory(path);Open(path); };
         cancel.Click += (_, _) => { operation?.Cancel();cancel.Enabled = false;cancel.Text = "Cancelling…"; };
-        download.Click += async (_, _) =>
+        primary.Click += async (_, _) =>
+        {
+            if (Chosen is not { } map) return;bool include = source.Checked;var action = primaryAction;
+            await Run(ActionProgress(action) + " " + map.Name, ct => AskingForGameFiles(map.Name, replace => store.ApplyAsync(action, map, include, Reporter(), ct, replace)));
+        };
+        more.Click += (_, _) => moreMenu.Show(more, new Point(0, more.Height));
+        downloadLater.Click += async (_, _) =>
         {
             if (Chosen is { } map) { bool include = source.Checked;await Run("Downloading " + map.Name, ct => AskingForGameFiles(map.Name, replace => store.DownloadAsync(map, include, Reporter(), ct, replace))); }
         };
-        enable.Click += async (_, _) =>
+        reinstall.Click += async (_, _) =>
         {
-            if (Chosen is { } map) { bool include = source.Checked;await Run("Enabling " + map.Name, ct => AskingForGameFiles(map.Name, replace => store.EnableVersionAsync(map, include, Reporter(), ct, replace))); }
+            if (Chosen is { } map) { bool include = source.Checked;await Run("Reinstalling " + map.Name, ct => AskingForGameFiles(map.Name, replace => store.EnableAsync(map, include, Reporter(), ct, replace))); }
         };
+        showUpdates.Click += (_, _) => statusFilter.SelectedItem = statusFilter.Text == "Updates available" ? "All maps" : "Updates available";
+        updateAll.Click += async (_, _) => await UpdateAllAsync();
         enableAll.Click += async (_, _) => await RunBulk(BulkAction.Enable);
         downloadAll.Click += async (_, _) => await RunBulk(BulkAction.Download);
         downloadEditable.Click += async (_, _) => await RunBulk(BulkAction.DownloadEditable);
@@ -292,7 +315,7 @@ public sealed class MainForm : Form
     }
     private void SetBusy()
     {
-        foreach (Control c in new Control[] { search, category, statusFilter, grid, version, source, download, enable, disable, enableAll, downloadAll, downloadEditable, folder, refresh }) c.Enabled = !busy;
+        foreach (Control c in new Control[] { search, category, statusFilter, grid, version, source, primary, disable, more, showUpdates, updateAll, enableAll, downloadAll, downloadEditable, folder, refresh }) c.Enabled = !busy;
         cancel.Visible = busy;cancel.Enabled = busy;cancel.Text = "Cancel";progress.Visible = busy;
     }
     private void FillMaps()
@@ -316,22 +339,64 @@ public sealed class MainForm : Form
                     "Downloaded" => store.State.Downloads.ContainsKey(map.Id), "Not downloaded" => !store.State.Downloads.ContainsKey(map.Id), _ => true
                 };
                 if (!matches) continue;
-                AddRow(map, map.Name, map.Category, DisplayVersion(map), state);
+                AddRow(map, map.Name, map.Category, VersionCell(map), state.Replace(" • update available", " • update"));
             }
             RestoreSelection(current, selected);
         }
         finally { filling = false; }
         count.Text = $"{grid.Rows.Count} maps shown  •  {maps.Count} in the library  •  {store.State.Installed.Values.Count(m => m.Enabled && !m.Entry.IsAssetPack)} managed and enabled";
-        catalogStatus.Text = store.CatalogMessage;NotesLoad = Detail();
+        catalogStatus.Text = store.CatalogMessage;
+        var pending = store.PendingUpdates().Count;
+        updateBanner.Visible = pending > 0;
+        updateBannerText.Text = pending == 1 ? "⬆  1 map has a new version" : $"⬆  {pending} maps have new versions";
+        updateAll.Text = pending == 1 ? "Update it" : $"Update all {pending}";
+        showUpdates.Text = statusFilter.Text == "Updates available" ? "Show all maps" : "Show which";
+        NotesLoad = Detail();
     }
     private void AddRow(MapEntry map, params object[] values)
     {
-        int index = grid.Rows.Add(values);grid.Rows[index].Tag = map;
-        if (CatalogPresentation.IsJpMap(map))
+        int index = grid.Rows.Add(values);var row = grid.Rows[index];row.Tag = map;
+        if (CatalogPresentation.IsJpMap(map)) { row.Cells[0].Style.Padding = new Padding(30, 4, 4, 4);row.Cells[0].ToolTipText = "Pinned • JP's Maps"; }
+        if (!store.HasUpdate(map)) return;
+        // Make outdated maps stand out in the list.
+        foreach (var cell in new[] { row.Cells[2], row.Cells[3] })
         {
-            grid.Rows[index].Cells[0].Style.Padding = new Padding(30, 4, 4, 4);
-            grid.Rows[index].Cells[0].ToolTipText = "Pinned • JP's Maps";
+            cell.Style.ForeColor = cell.Style.SelectionForeColor = UpdateInk;cell.Style.Font = new Font(grid.Font, FontStyle.Bold);
+            cell.ToolTipText = $"A new version is available: {VersionName(map)}";
         }
+    }
+    // The version the user currently has for a map: the enabled copy, otherwise the downloaded or disabled one.
+    private MapEntry? CurrentVersion(MapEntry map)
+    {
+        store.State.Installed.TryGetValue(map.Id, out var installed);
+        return installed?.Enabled == true ? installed.Entry : store.State.Downloads.GetValueOrDefault(map.Id) ?? installed?.Entry;
+    }
+    private string VersionCell(MapEntry map)
+    {
+        if (!store.HasUpdate(map) || CurrentVersion(map) is not { } have) return DisplayVersion(map);
+        string from = VersionName(have), to = VersionName(map);
+        return from.Length > 0 && to.Length > 0 && from != to ? $"{from} → {to}" : $"{to} (new build)";
+    }
+    private async Task UpdateAllAsync()
+    {
+        var pending = store.PendingUpdates();
+        if (pending.Count == 0) return;
+        var list = string.Join("\n", pending.Take(12).Select(m => $"•  {m.Name}   {VersionCell(m)}")) + (pending.Count > 12 ? $"\n…and {pending.Count - 12} more" : "");
+        if (MessageBox.Show(this, $"Update {(pending.Count == 1 ? "this map" : $"these {pending.Count} maps")} to the newest version?\n\n{list}\n\n" +
+            "Enabled maps are replaced straight away and the old files are backed up. Maps you have not enabled are downloaded, ready for later.\n\n" +
+            "If you keep an older version to match a server, choose No and update maps one at a time.", "Update maps", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
+        List<BulkFailure> failures = [];var reporter = Reporter();
+        if (!await Run("Updating maps…", async ct =>
+        {
+            failures = await store.UpdateAllAsync(pending, reporter, ct);
+            // Updates that would replace game files wait for the user's agreement, then run again together.
+            var blocked = failures.Where(f => f.GameFiles.Count > 0).ToList();
+            if (blocked.Count == 0 || !AllowReplacing(blocked.SelectMany(f => f.GameFiles).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), blocked.Count == 1 ? blocked[0].Map.Name : $"{blocked.Count} maps")) return;
+            failures = failures.Except(blocked).Concat(await store.UpdateAllAsync(blocked.Select(f => f.Map).ToList(), reporter, ct, replaceGameFiles: true)).ToList();
+        }) || failures.Count == 0 || closing || IsDisposed) return;
+        operationStatus.Text = $"Updated {pending.Count - failures.Count} of {pending.Count} maps.";
+        MessageBox.Show(this, "These maps were not updated:\n\n" + string.Join("\n\n", failures.Take(8).Select(f => $"{f.Map.Name}: {f.Message}")) + (failures.Count > 8 ? $"\n\n…and {failures.Count - 8} more." : ""),
+            "Some updates stopped", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
     // Rebuilding the rows drops the selection; reselect the maps that are still shown, keeping the focused one current.
     private void RestoreSelection(string? current, IReadOnlySet<string> selected)
@@ -406,8 +471,8 @@ public sealed class MainForm : Form
                     if (kept != null && choices.All(c => c.Fingerprint != kept.Fingerprint)) choices.Add(kept);
                 var newest = store.Catalog?.Maps.FirstOrDefault(m => m.Id == map.Id);
                 foreach (var choice in choices) version.Items.Add(new VersionChoice(choice, VersionLabel(choice, newest, installed, saved)));
-                // Keep the user's pick while the same map stays selected; otherwise show what is in use.
-                var preferred = previous?.Entry.Id == map.Id ? previous.Entry : saved ?? installed?.Entry ?? map;
+                // Keep the user's pick while the same map stays selected; otherwise offer the newest release, so an update is the obvious next step.
+                var preferred = previous?.Entry.Id == map.Id ? previous.Entry : map;
                 var index = choices.FindIndex(c => c.Fingerprint == preferred.Fingerprint && c.Version == preferred.Version);
                 version.SelectedIndex = Math.Max(0, index >= 0 ? index : choices.FindIndex(c => c.Fingerprint == preferred.Fingerprint));
             }
@@ -428,19 +493,38 @@ public sealed class MainForm : Form
     {
         notesCancel?.Cancel();notesCancel?.Dispose();notesCancel = new CancellationTokenSource();var ct = notesCancel.Token;
         bool multiple = grid.SelectedRows.Count > 1;
-        foreach (var single in new Control[] { versionRow, source, enable, disable, download }) single.Visible = !multiple;
+        foreach (var single in new Control[] { versionRow, source, primary }) single.Visible = !multiple;
         foreach (var bulk in new Control[] { enableAll, downloadAll, downloadEditable }) bulk.Visible = multiple;
         notesTitle.Text = multiple ? "SELECTED MAPS" : "MAP NOTES & DEPENDENCIES";
-        if (multiple) { SelectionDetail();return; }
-        var map = Selected;var chosen = Chosen;download.Enabled = enable.Enabled = map != null && !busy;disable.Enabled = map != null && !busy && store.CanDisable(map);
+        if (multiple) { disable.Visible = more.Visible = updateNotice.Visible = false;SelectionDetail();return; }
+        var map = Selected;var chosen = Chosen;
         version.Enabled = version.Items.Count > 1 && !busy;
-        if (map == null || chosen == null) { mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");source.Enabled = false;return; }
+        if (map == null || chosen == null)
+        {
+            mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");
+            source.Enabled = false;primary.Enabled = false;disable.Visible = more.Visible = updateNotice.Visible = false;return;
+        }
         mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {chosen.Version}\n{chosen.Packages}  •  {SizeText(chosen.Bytes)}  •  {chosen.Files.Count} files";
         summary.Text = store.Status(map) + "\nVerified downloads. Automatic backups.\nAsks before replacing game files; disabling puts them back.";
         source.Enabled = chosen.HasSource && !busy;source.Checked = store.State.Installed.TryGetValue(map.Id, out var installed) && installed.IncludeSource;
-        bool chosenInstalled = installed?.Entry.Fingerprint == chosen.Fingerprint, latest = chosen.Fingerprint == map.Fingerprint;
-        enable.Text = installed?.Enabled == true ? (chosenInstalled ? "Repair / enable" : "Switch to " + VersionName(chosen)) : "Enable map";
-        download.Text = latest ? (store.HasUpdate(map) ? "Download update" : "Download map") : "Download " + VersionName(chosen);
+        updateNotice.Visible = store.HasUpdate(map) && CurrentVersion(map) is not null;
+        if (updateNotice.Visible)
+        {
+            string have = VersionName(CurrentVersion(map)!), next = VersionName(map);
+            updateNotice.Text = have.Length > 0 && have != next ? $"⬆  {next} is available  (you have {have})" : $"⬆  A new build of {next} is available";
+        }
+        primaryAction = store.PrimaryAction(map, chosen);
+        bool latest = chosen.Fingerprint == map.Fingerprint && chosen.Version == map.Version, enabled = installed?.Enabled == true;
+        primary.Text = ActionLabel(primaryAction, latest ? null : VersionName(chosen), VersionName(chosen));
+        primary.Enabled = primaryAction != MapAction.UpToDate && !busy;
+        primary.BackColor = primaryAction == MapAction.UpToDate ? Color.White : primaryAction is MapAction.Update or MapAction.UpdateAndEnable ? UpdateInk : Accent;
+        primary.ForeColor = primaryAction == MapAction.UpToDate ? Ink : Color.White;
+        disable.Visible = store.CanDisable(map);disable.Enabled = !busy;
+        // Downloading for later only makes sense while the map is not in play; reinstalling only when the chosen version is the one in play.
+        // Menu items report Visible = false while the menu is closed, so Available is used instead.
+        downloadLater.Available = !enabled;downloadLater.Text = latest ? "Download for later" : $"Download {VersionName(chosen)} for later";
+        reinstall.Available = enabled && primaryAction is MapAction.UpToDate or MapAction.Repair;
+        more.Visible = downloadLater.Available || reinstall.Available;more.Enabled = !busy;
         details?.PerformLayout();FitNotes();
         MarkdownView.Render(notes, "Loading map notes…");
         try { var text = await repository.NotesAsync(chosen, ct);if (!ct.IsCancellationRequested && !IsDisposed) MarkdownView.RenderNotes(notes, text, chosen); }
@@ -518,6 +602,24 @@ public sealed class MainForm : Form
             "Maps that need the replacements may not load until you enable them again, which asks first.", "Restore original game files", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
         await Run("Restoring original game files…", ct => store.RestoreGameFilesAsync(found, ct));
     }
+    // olderVersion is set only when the user picked something other than the newest release.
+    private static string ActionLabel(MapAction action, string? olderVersion, string chosenVersion) => action switch
+    {
+        MapAction.Restore => "Enable map",
+        MapAction.Enable => olderVersion is null ? "Enable map" : "Enable " + olderVersion,
+        MapAction.UpdateAndEnable => "Update & enable",
+        MapAction.Update => "Update to " + chosenVersion,
+        MapAction.Switch => "Switch to " + chosenVersion,
+        MapAction.Repair => "Repair map",
+        _ => olderVersion is null ? "✓ Up to date" : $"✓ {olderVersion} enabled"
+    };
+    private static string ActionProgress(MapAction action) => action switch
+    {
+        MapAction.Update or MapAction.UpdateAndEnable => "Updating",
+        MapAction.Switch => "Switching",
+        MapAction.Repair => "Repairing",
+        _ => "Enabling"
+    };
     private static string SizeText(long bytes) => bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024.0 * 1024 * 1024):0.0} GB" : $"{bytes / (1024.0 * 1024):0.0} MB";
     public async Task<string> SmokeAsync(string? artifact = null)
     {
@@ -537,13 +639,13 @@ public sealed class MainForm : Form
         if (version.Items.Count < 2 || (version.SelectedItem as VersionChoice)?.Entry.Fingerprint != Selected?.Fingerprint || !version.Enabled)
             throw new InvalidOperationException("Version picker did not offer Shipment's releases with the newest selected.");
         version.SelectedIndex = version.Items.Count - 1;await NotesLoad;
-        if (Chosen?.Version == Selected?.Version || !metadata.Text.Contains(Chosen!.Version) || !download.Text.StartsWith("Download v"))
+        if (Chosen?.Version == Selected?.Version || !metadata.Text.Contains(Chosen!.Version) || !primary.Text.StartsWith("Enable v") || downloadLater.Text?.StartsWith("Download v") != true)
             throw new InvalidOperationException("Choosing an older version did not update the details panel.");
         var oldest = Chosen.Version;version.SelectedIndex = 0;await NotesLoad;
         if (!notes.Text.StartsWith("Map notes are unavailable") && (notes.Text.Contains("**") || notes.Text.Contains("](") || notes.Text.Contains("| ---") || notes.Text.TrimStart().StartsWith('#')))
             throw new InvalidOperationException("Map notes still show raw markdown.");
         grid.CurrentCell = grid.Rows[0].Cells[0];grid.Rows[1].Selected = true;grid.Rows[2].Selected = true;await NotesLoad;
-        if (!enableAll.Visible || !downloadAll.Visible || !downloadEditable.Visible || enable.Visible || version.Visible || mapName.Text != "3 maps selected")
+        if (!enableAll.Visible || !downloadAll.Visible || !downloadEditable.Visible || primary.Visible || more.Visible || version.Visible || mapName.Text != "3 maps selected")
             throw new InvalidOperationException("Selecting several maps did not offer the bulk actions.");
         if (artifact != null)
         {
@@ -554,7 +656,38 @@ public sealed class MainForm : Form
         if (grid.SelectedRows.Count != 3) throw new InvalidOperationException("Refreshing the list lost the selected maps.");
         foreach (DataGridViewRow row in grid.Rows) if (row.Tag is MapEntry m && CatalogPresentation.IsJpMap(m) && m.Name == "Shipment") { grid.CurrentCell = row.Cells[0];break; }
         await NotesLoad;
-        if (!enable.Visible || enableAll.Visible || grid.SelectedRows.Count != 1) throw new InvalidOperationException("Selecting one map did not restore the single-map actions.");
+        if (!primary.Visible || enableAll.Visible || grid.SelectedRows.Count != 1) throw new InvalidOperationException("Selecting one map did not restore the single-map actions.");
+        if (store.Status(Selected!) == "Not downloaded" && (primary.Text != "Enable map" || disable.Visible || !downloadLater.Available))
+            throw new InvalidOperationException("A map that is not downloaded should offer Enable map, with Download for later under More.");
+        bool bannerBefore = updateBanner.Visible;
+        // Pretend an older Shipment was downloaded (in memory only, nothing is saved) to check that the update is easy to spot.
+        NotesLoad = Detail();await NotesLoad;
+        var older = store.Catalog!.VersionsOf(Selected!).Last();
+        store.State.Downloads.TryGetValue(older.Id, out var hadDownload);store.State.Downloads[older.Id] = older;
+        try
+        {
+            FillMaps();await NotesLoad;
+            if (!updateBanner.Visible || grid.CurrentRow?.Cells[2].Value?.ToString()?.Contains('→') != true || !updateNotice.Visible || primary.Text != "Update & enable" || !downloadLater.Available)
+                throw new InvalidOperationException($"An available update was not made obvious (banner {updateBanner.Visible}, version {grid.CurrentRow?.Cells[2].Value}, notice {updateNotice.Visible}, button {primary.Text}, download later {downloadLater.Available}).");
+            statusFilter.SelectedItem = "Updates available";
+            if (!grid.Rows.Cast<DataGridViewRow>().Any(r => r.Tag is MapEntry m && m.Id == older.Id) || showUpdates.Text != "Show all maps") throw new InvalidOperationException("The updates filter did not list the outdated map.");
+            statusFilter.SelectedIndex = 0;
+            foreach (DataGridViewRow row in grid.Rows) if (row.Tag is MapEntry m && m.Id == older.Id) { grid.CurrentCell = row.Cells[0];break; }
+            await NotesLoad;
+            if (artifact != null)
+            {
+                Directory.CreateDirectory(artifact);PerformLayout();Refresh();
+                using var bitmap = new Bitmap(Width, Height);DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size));
+                bitmap.Save(Path.Combine(artifact, "map-manager-update.png"));
+            }
+        }
+        finally
+        {
+            if (hadDownload != null) store.State.Downloads[older.Id] = hadDownload; else store.State.Downloads.Remove(older.Id);
+            statusFilter.SelectedIndex = 0;FillMaps();
+        }
+        await NotesLoad;
+        if (updateBanner.Visible != bannerBefore) throw new InvalidOperationException("The update banner did not return to its earlier state.");
         if (artifact != null)
         {
             Directory.CreateDirectory(artifact);
@@ -581,7 +714,7 @@ public sealed class MainForm : Form
         }
         await NotesLoad;
         return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nVersions offered: {version.Items.Count} (newest {Selected?.Version}, oldest {oldest})\n" +
-            $"Disable enabled: {disable.Enabled}\nMap and asset filter, search, version picker and version checks passed.";
+            $"Main action: {primary.Text}\nDisable shown: {disable.Visible}\nMap and asset filter, search, version picker, multi-select, update display and action button checks passed.";
     }
     private sealed class AssetSmokeRepository : IRepositoryClient
     {
