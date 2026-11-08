@@ -25,6 +25,7 @@ public record MapEntry(string Id, string Name, string Category, string Version, 
 }
 public record Catalog(string Commit, DateTimeOffset CheckedAt, List<MapEntry> Maps)
 {
+    public string Warning { get; init; } = "";
     public List<MapEntry> AssetPacks { get; init; } = [];
     // Every published version per map ID, newest first. Maps and AssetPacks hold only the newest.
     public Dictionary<string, List<MapEntry>> Versions { get; init; } = new(StringComparer.Ordinal);
@@ -159,7 +160,8 @@ public static class CatalogParser
 public static class SafePaths
 {
     public static bool IsEditorAsset(string path) => IsMapAsset(path) &&
-        (path.StartsWith("Packages/Textures/", StringComparison.Ordinal) || path.StartsWith("Packages/StaticMeshes/", StringComparison.Ordinal));
+        (path.StartsWith("Packages/Textures/", StringComparison.Ordinal) || path.StartsWith("Packages/StaticMeshes/", StringComparison.Ordinal)
+            || path.StartsWith("Packages/Sounds/", StringComparison.Ordinal) || path.StartsWith("Packages/Animations/", StringComparison.Ordinal));
     public static void ValidateRelative(string path)
     {
         if (string.IsNullOrWhiteSpace(path) || path.Contains('\\') || Path.IsPathRooted(path)) throw new InvalidDataException("Unsafe map path.");

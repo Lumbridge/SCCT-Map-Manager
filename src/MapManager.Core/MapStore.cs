@@ -66,7 +66,8 @@ public sealed class MapStore : IDisposable
             if (Load<Journal>("pending.json") is { } pending) { this.guard(); Rollback(pending); }
             Catalog = Load<Catalog>("catalog.json");
             if (Catalog != null) Catalog = PortLayout.Normalize(Catalog);
-            if (Catalog != null) CatalogMessage = "Saved catalog • " + Catalog.CheckedAt.LocalDateTime.ToString("g");
+            if (Catalog != null) CatalogMessage = "Saved catalog • " + Catalog.CheckedAt.LocalDateTime.ToString("g")
+                + (Catalog.Warning.Length > 0 ? " • " + Catalog.Warning : "");
         }
         catch { fileLock.Dispose(); throw; }
     }
@@ -94,7 +95,8 @@ public sealed class MapStore : IDisposable
         {
             var fresh = PortLayout.Normalize(await repository.FetchCatalogAsync(cancel));
             Save("catalog.json", fresh); Catalog = fresh;
-            CatalogMessage = "Up to date • " + fresh.CheckedAt.LocalDateTime.ToString("g");
+            CatalogMessage = fresh.Warning.Length == 0 ? "Up to date • " + fresh.CheckedAt.LocalDateTime.ToString("g")
+                : "Maps refreshed • " + fresh.Warning;
         }
         catch (Exception ex) when (ex is not OperationCanceledException && Catalog != null)
         { CatalogMessage = "Offline catalog • " + ex.Message; }

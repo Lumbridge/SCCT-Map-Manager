@@ -30,7 +30,7 @@ public sealed class AssetLibraryDialog : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         foreach (var height in new[] { 76f, 38f, 0f, 180f, 46f, 44f, 44f })
             layout.RowStyles.Add(height == 0 ? new RowStyle(SizeType.Percent, 100) : new RowStyle(SizeType.Absolute, height));
-        layout.Controls.Add(new Label { Text = "EDITOR ASSETS\nOptional texture and static mesh packs for map makers. Mesh packs include their bundled materials.\nAssets stay installed because your maps may depend on them.", Dock = DockStyle.Fill, AutoSize = true }, 0, 0);
+        layout.Controls.Add(new Label { Text = "EDITOR ASSETS\nOptional texture, static mesh, sound and animation packs for map makers.\nAssets stay installed because your maps may depend on them.", Dock = DockStyle.Fill, AutoSize = true }, 0, 0);
         var filters = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2 };
         filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 70));filters.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 30));
         filter.Items.AddRange(["All packs", "Textures", "Static meshes", "Updates available"]);filter.SelectedIndex = 0;
@@ -82,7 +82,7 @@ public sealed class AssetLibraryDialog : Form
     {
         notesOperation?.Cancel();notesOperation?.Dispose();notesOperation = new CancellationTokenSource();var ct = notesOperation.Token;
         var pack = Selected;install.Enabled = download.Enabled = pack != null && !busy;
-        if (pack == null) { MarkdownView.Render(details, "Published texture and static mesh packs appear here. Maps remain in the main library.");return; }
+        if (pack == null) { MarkdownView.Render(details, "Published texture, static mesh, sound and animation packs appear here. Maps remain in the main library.");return; }
         install.Text = store.HasUpdate(pack) ? "Update installed pack" : "Download + install";
         if (!store.State.Installed.ContainsKey(pack.Id)) install.Text = "Download + install";
         var cached = store.State.Downloads.GetValueOrDefault(pack.Id);

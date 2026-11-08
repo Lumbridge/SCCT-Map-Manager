@@ -43,7 +43,7 @@ For ports hosted as release assets, use `ports/<game-name>/<map-name>` as the ma
 
 Packs have a stable ID and an explicit version such as `v1.0.0`. The latest numeric version is what the manager lists.
 
-**Small packs** can live in the repository at `assets/<pack>/v1.0.0/Packages/Textures` and `Packages/StaticMeshes`, with release notes at the version root.
+**Small packs** can live in the repository at `assets/<pack>/v1.0.0/Packages/Textures`, `Packages/StaticMeshes`, `Packages/Sounds` and `Packages/Animations`, with release notes at the version root. Sound packages may use `.uax`, `.uas`, `.mux` or `.usxx`; animations use `.ukx`.
 
 **Large packs** are described by `asset-catalog.json` at the repository root, with the binaries attached to versioned releases in that repository:
 

@@ -629,7 +629,18 @@ public sealed class MainForm : Form
         category.SelectedItem = CatalogPresentation.JpMaps;
         if (grid.Rows.Count != jpCount) throw new InvalidOperationException("JP's Maps filter failed.");
         category.SelectedItem = "Enhanced";if (grid.Rows.Count != 1) throw new InvalidOperationException("Enhanced filter failed.");
-        category.SelectedIndex = 0;int unfiltered = grid.Rows.Count;search.Text = "Shipment";
+        category.SelectedIndex = 0;int unfiltered = grid.Rows.Count;search.Text = "MoonD";
+        await NotesLoad;
+        if (grid.Rows.Count != 1 || Selected?.Id != "original/MoonD" || mapName.Text != "Moonlight Park"
+            || version.Items.Count != store.Catalog!.VersionsOf(Selected).Count)
+            throw new InvalidOperationException("Moonlight Park or its published versions are missing from map search.");
+        if (artifact != null)
+        {
+            Directory.CreateDirectory(artifact);PerformLayout();Refresh();
+            using var bitmap = new Bitmap(Width, Height);DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size));
+            bitmap.Save(Path.Combine(artifact, "moonlight-park.png"));
+        }
+        search.Text = "Shipment";
         // Other collections may also carry a Shipment (e.g. ports), so check the filter rather than an exact count.
         var found = grid.Rows.Cast<DataGridViewRow>().Select(row => (MapEntry)row.Tag!).ToList();
         if (found.Count == 0 || found.Count >= unfiltered || !found.All(m => (m.Name + " " + m.Packages).Contains("Shipment", StringComparison.OrdinalIgnoreCase))

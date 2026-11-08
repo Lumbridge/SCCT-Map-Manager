@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Net;
 using MapManager.Core;
 
 int assertions = 0;
@@ -187,8 +188,26 @@ var releaseAsset = asset with { NotesPath = asset.Id + "/v1.0.0/README.md", File
 var manifest = JsonSerializer.Serialize(new[] { releaseAsset, releaseAsset with { Version = "v1.10.0", NotesPath = asset.Id + "/v1.10.0/README.md", Files = releaseAsset.Files.Select(f => f with { Source = "releases/download/r6v-v1.10.0/Shared.utx" }).ToList() } });
 Check(AssetCatalog.Parse(manifest, a.Commit).Single().Version == "v1.10.0", "release catalog chooses newest semantic version");
 await Reject(() => { AssetCatalog.Parse(JsonSerializer.Serialize(new[] { releaseAsset with { Files = [releaseAsset.Files[0] with { Destination = "System/hack.exe" }] } }), a.Commit);return Task.CompletedTask; }, "release catalog rejects executable destinations");
+var resourcePaths = new[] { "Packages/Animations/Stock.ukx", "Packages/Sounds/Stock.uax", "Packages/Sounds/Stock.uas", "Packages/Sounds/Stock.mux", "Packages/Sounds/Stock.usxx" };
+var stockResources = releaseAsset with { Id = "assets/stock-resources", NotesPath = "assets/stock-resources/v1.0.0/README.md",
+    Files = resourcePaths.Select(path => releaseAsset.Files[0] with { Source = "releases/download/stock-v1.0.0/" + Path.GetFileName(path), Destination = path }).ToList() };
+stockResources = AssetCatalog.Parse(JsonSerializer.Serialize(new[] { stockResources }), a.Commit).Single();
+Check(stockResources.Files.Count == resourcePaths.Length, "stock editor packs accept animation and all supported sound package formats");
+foreach (var destination in new[] { "Packages/Maps/Stock.sdc", "Packages/MapsEd/Stock.sdc", "System/_PC_/Stock.int", "Packages/Sounds/hack.exe", "Packages/Animations/hack.dll" })
+    await Reject(() => { AssetCatalog.Parse(JsonSerializer.Serialize(new[] { stockResources with { Files = [stockResources.Files[0] with { Destination = destination }] } }), a.Commit);return Task.CompletedTask; },
+        "editor resource packs still reject maps, localization and executable files: " + destination);
+var resourceRoot = Fixture("stock-editor-resources");
+using (var store = new MapStore(resourceRoot, client))
+{
+    await store.EnableAsync(stockResources, false, null, default);
+    Check(stockResources.Files.All(f => Hashing.GitBlob(SafePaths.Under(resourceRoot, f.Destination)) == f.Hash), "sound and animation resources install and verify in a disposable installation");
+    Put(resourceRoot, resourcePaths[0], "local animation edits");
+    await Reject(() => store.EnableAsync(stockResources, false, null, default), "resource pack reinstall preserves edited animation packages");
+    Check(Read(resourceRoot, resourcePaths[0]) == "local animation edits", "edited animation bytes remain intact");
+}
 var seedPath = Path.Combine("src", "MapManager.App", "catalog-seed.json");
 var seed = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(seedPath))!;
+Check(CatalogParser.Parse(seed.ToJsonString()).Maps.Any(m => m.Id == "original/MoonD" && m.Name == "Moonlight Park"), "bundled offline catalog includes Moonlight Park");
 foreach (var version in new[] { "v1.9.0", "v1.10.0" })
     seed["tree"]!.AsArray().Add(new System.Text.Json.Nodes.JsonObject { ["path"] = $"assets/Rainbow Six Vegas/{version}/Packages/StaticMeshes/R6V.usx", ["type"] = "blob", ["sha"] = a.Commit, ["size"] = 123 });
 var assetCatalog = CatalogParser.Parse(seed.ToJsonString());
@@ -331,6 +350,50 @@ Check(renamedCatalog.Maps.Select(m => m.Name).SequenceEqual(new[] { "Moonlight P
 Check(MapNames.Apply(new Catalog(a.Commit, DateTimeOffset.UtcNow, [b]), new Dictionary<string, string> { ["B"] = "Renamed" }).Maps.Single().Name == b.Name, "names apply to original maps only");
 foreach (var bad in new[] { "", "[]", "\"text\"", "{\"ShipD\":", "null" })
     await Reject(() => { MapNames.Parse(bad);return Task.CompletedTask; }, "names file that is not a JSON object is rejected: " + (bad.Length == 0 ? "empty" : bad));
+
+// Optional release-hosted assets must not discard a successfully refreshed map tree.
+var invalidManifest = JsonSerializer.Serialize(new[] { stockResources with { Files = [stockResources.Files[0] with { Destination = "System/hack.exe" }] } });
+foreach (var scenario in new[] { "valid", "missing", "invalid-file", "bad-json", "unavailable", "timeout" })
+{
+    var refreshRoot = Fixture("catalog-refresh-" + scenario);
+    using var repository = new RepositoryClient(new HttpClient(new CatalogHttpHandler((request, token) =>
+    {
+        var path = request.RequestUri!.AbsolutePath;
+        if (path.EndsWith("/names.json")) return new HttpResponseMessage(HttpStatusCode.NotFound);
+        if (!path.EndsWith("/asset-catalog.json")) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(versionTree.ToJsonString()) };
+        if (scenario == "timeout") throw new OperationCanceledException("asset request timed out", token);
+        var status = scenario == "missing" ? HttpStatusCode.NotFound : scenario == "unavailable" ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK;
+        return new HttpResponseMessage(status) { Content = new StringContent(scenario == "bad-json" ? "[" : scenario == "invalid-file" ? invalidManifest : JsonSerializer.Serialize(new[] { stockResources })) };
+    })));
+    using (var store = new MapStore(refreshRoot, repository))
+    {
+        store.UseFallbackCatalog(new Catalog(a.Commit, DateTimeOffset.UtcNow, [a]));
+        await store.RefreshAsync(default);
+        Check(store.Catalog!.Maps.Any(m => m.Id == "original/MoonD") && !store.CatalogMessage.StartsWith("Offline"), "fresh MoonD survives optional asset catalog outcome: " + scenario);
+        bool expectedWarning = scenario is not ("valid" or "missing");
+        Check((store.Catalog.Warning.Length > 0) == expectedWarning && (store.CatalogMessage.Contains("unavailable")) == expectedWarning,
+            "partial refresh reports asset availability accurately: " + scenario);
+        Check(store.Catalog.AssetPacks.Count == (scenario == "valid" ? 1 : 0), "only validated release assets are offered: " + scenario);
+        if (scenario == "invalid-file") Check(store.Catalog.Warning.Contains("assets/stock-resources") && store.Catalog.Warning.Contains("System/hack.exe"), "invalid asset warning identifies the pack and file");
+    }
+    using var saved = new MapStore(refreshRoot, client);
+    Check(saved.Catalog!.Maps.Any(m => m.Id == "original/MoonD") && saved.CatalogMessage.Contains("unavailable") == (scenario is not ("valid" or "missing")),
+        "refreshed map catalog and asset warning survive restart: " + scenario);
+}
+using (var cancellation = new CancellationTokenSource())
+using (var repository = new RepositoryClient(new HttpClient(new CatalogHttpHandler((request, token) =>
+{
+    if (request.RequestUri!.AbsolutePath.EndsWith("/asset-catalog.json")) { cancellation.Cancel();throw new OperationCanceledException(token); }
+    return request.RequestUri.AbsolutePath.EndsWith("/names.json") ? new HttpResponseMessage(HttpStatusCode.NotFound)
+        : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(versionTree.ToJsonString()) };
+}))))
+using (var store = new MapStore(Fixture("catalog-cancel"), repository))
+{
+    store.UseFallbackCatalog(new Catalog(a.Commit, DateTimeOffset.UtcNow, [a]));
+    bool cancelled = false;
+    try { await store.RefreshAsync(cancellation.Token); } catch (OperationCanceledException) { cancelled = true; }
+    Check(cancelled && store.Catalog!.Maps.Single().Id == a.Id && !File.Exists(Path.Combine(store.DataRoot, "catalog.json")), "caller cancellation stops refresh without saving a partial catalog");
+}
 var releasedVersions = AssetCatalog.ParseAll(manifest, a.Commit).Single();
 Check(releasedVersions.Select(v => v.Version).SequenceEqual(new[] { "v1.10.0", "v1.0.0" }), "release catalog keeps older pack and port versions");
 var legacyVersions = PortLayout.Normalize(new Catalog(a.Commit, DateTimeOffset.UtcNow, []) { Versions = new() { ["ports/rainbow-six-vegas"] = [casino with { Id = "ports/rainbow-six-vegas" }] } });
@@ -581,13 +644,17 @@ if (treeArg >= 0)
     var catalog = CatalogParser.Parse(await File.ReadAllTextAsync(args[treeArg + 1]));
     Check(catalog.Maps.Count(m => m.Category == "Community") == 56, "discover all 56 community maps");
     using var tree = JsonDocument.Parse(await File.ReadAllTextAsync(args[treeArg + 1]));
-    var shipmentVersions = tree.RootElement.GetProperty("tree").EnumerateArray()
+    List<string> PublishedVersions(string package) => tree.RootElement.GetProperty("tree").EnumerateArray()
         .Select(entry => entry.GetProperty("path").GetString()!)
-        .Where(path => path.StartsWith("release/ShipD/") && path.EndsWith("/Packages/Maps/ShipD.sdc"))
+        .Where(path => path.StartsWith($"release/{package}/") && path.EndsWith($"/Packages/Maps/{package}.sdc"))
         .Select(path => path.Split('/')[2]).Distinct()
-        .OrderByDescending(version => Version.Parse(version.TrimStart('v').Contains('.') ? version.TrimStart('v') : version.TrimStart('v') + ".0"));
+        .OrderByDescending(version => Version.Parse(version.TrimStart('v').Contains('.') ? version.TrimStart('v') : version.TrimStart('v') + ".0")).ToList();
+    var shipmentVersions = PublishedVersions("ShipD");
     Check(catalog.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Shipment" && m.Version == shipmentVersions.First()), "select the latest original Shipment release");
-    Check(catalog.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Moonlight Park" && m.Version == "v1.0" && m.Packages == "MoonD"), "list Moonlight Park v1.0 under its display name");
+    var moonlight = catalog.Maps.Single(m => m.Id == "original/MoonD");
+    var moonlightVersions = PublishedVersions("MoonD");
+    Check(moonlight.Category == CatalogPresentation.JpMaps && moonlight.Name == "Moonlight Park" && moonlight.Version == moonlightVersions.First() && moonlight.Packages == "MoonD"
+        && catalog.VersionsOf(moonlight).Select(m => m.Version).SequenceEqual(moonlightVersions), "list the latest published Moonlight Park release and all older versions");
     Check(catalog.Maps.Any(m => m.Category == "Enhanced") && catalog.Maps.Count(m => m.Category == "Recovered") == 5, "include enhanced and recovered collections");
     Check(catalog.Maps.Where(m => m.Category == "Community").All(m => m.Files.Any(f => f.Source.StartsWith("community/_shared/"))), "bundle shared community dependencies with each map");
     Check(catalog.Maps.All(m => m.Files.All(f => !f.Source.Contains("/src/") && !f.Source.EndsWith(".exe"))), "catalog excludes source artwork and executables");
@@ -596,7 +663,9 @@ if (treeArg >= 0)
     {
         using var live = new RepositoryClient();var liveRoot = Fixture("live-download");using var store = new MapStore(liveRoot, live);
         await store.RefreshAsync(default);Check(store.Catalog?.Maps.Count >= 62, "refresh catalog from public GitHub without credentials");
-        Check(store.Catalog!.Maps.Any(m => m.Category == CatalogPresentation.JpMaps && m.Name == "Moonlight Park" && m.Version == "v1.0"), "live catalog lists Moonlight Park v1.0 in JP's Maps");
+        var liveMoonlight = store.Catalog!.Maps.Single(m => m.Id == "original/MoonD");
+        Check(store.Catalog.Warning.Length == 0 && liveMoonlight.Category == CatalogPresentation.JpMaps && liveMoonlight.Name == "Moonlight Park"
+            && liveMoonlight.Files.Any(f => f.Source == $"release/MoonD/{liveMoonlight.Version}/Packages/Maps/MoonD.sdc"), "live catalog lists the published Moonlight Park release without asset catalog errors");
         var shipment = store.Catalog!.Maps.Single(m => m.Name == "Shipment");
         await store.EnableAsync(shipment, false, new Progress<TransferProgress>(p => Console.WriteLine(p.Message)), default);
         Check(shipment.InstallFiles(false).All(f => Hashing.GitBlob(SafePaths.Under(liveRoot, f.Destination)) == f.Hash), "real Shipment map and every dependency match the pinned repository blobs");
@@ -630,6 +699,11 @@ Console.WriteLine($"PASS {assertions} checks. Fixtures: {output}");
 sealed class SyncProgress(Action<TransferProgress> report) : IProgress<TransferProgress>
 {
     public void Report(TransferProgress value) => report(value);
+}
+
+sealed class CatalogHttpHandler(Func<HttpRequestMessage, CancellationToken, HttpResponseMessage> respond) : HttpMessageHandler
+{
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => Task.FromResult(respond(request, cancellationToken));
 }
 
 sealed class DraftClient(string root) : IRepositoryClient

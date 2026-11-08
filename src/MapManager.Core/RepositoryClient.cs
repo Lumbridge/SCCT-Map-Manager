@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 namespace MapManager.Core;
 
@@ -14,8 +15,12 @@ public interface IRepositoryClient
 public sealed class RepositoryClient : IRepositoryClient, IDisposable
 {
     public const string RepositoryUrl = "https://github.com/Lumbridge/SCCT-Maps";
-    private readonly HttpClient http = new() { Timeout = TimeSpan.FromMinutes(10) };
-    public RepositoryClient() => http.DefaultRequestHeaders.UserAgent.ParseAdd("SCCT-Map-Manager/0.1");
+    private readonly HttpClient http;
+    public RepositoryClient() : this(new HttpClient { Timeout = TimeSpan.FromMinutes(10) }) { }
+    public RepositoryClient(HttpClient http)
+    {
+        this.http = http;http.DefaultRequestHeaders.UserAgent.ParseAdd("SCCT-Map-Manager/0.1");
+    }
     public async Task<Catalog> FetchCatalogAsync(CancellationToken cancel)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);timeout.CancelAfter(TimeSpan.FromSeconds(25));
@@ -27,6 +32,8 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         response.EnsureSuccessStatusCode();
         var catalog = CatalogParser.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
         catalog = MapNames.Apply(catalog, await MapNamesAsync(catalog.Commit, timeout.Token));
+        try
+        {
         using var assets = await http.GetAsync($"https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/{catalog.Commit}/asset-catalog.json", timeout.Token);
         if (assets.StatusCode != HttpStatusCode.NotFound)
         {
@@ -44,6 +51,12 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
                 Maps = CatalogPresentation.Order(catalog.Maps.Concat(packs.Where(p => p.IsPort))).ToList(),
                 AssetPacks = packs.Where(p => p.IsAssetPack).Concat(catalog.AssetPacks).Concat(recoveredAssets).DistinctBy(p => p.Id).OrderBy(p => p.Name).ToList(),
                 Versions = versions };
+        }
+        }
+        catch (Exception ex) when (!cancel.IsCancellationRequested && (ex is HttpRequestException or IOException or InvalidDataException or JsonException or OperationCanceledException))
+        {
+            // Release-hosted ports and asset packs must not prevent ordinary maps from refreshing.
+            catalog = catalog with { Warning = "Some ports and asset packs are unavailable: " + ex.Message };
         }
         return catalog;
         }

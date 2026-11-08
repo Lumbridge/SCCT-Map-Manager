@@ -35,7 +35,7 @@ Earlier versions replaced these files without asking, and v0.4.5 and earlier cou
 
 ### Textures and static meshes
 
-**Tools → Textures & static meshes** lists optional asset packs for map makers, such as the converted Rainbow Six Vegas meshes. Install or update them like maps. Packs stay installed because maps may depend on them.
+**Tools → Textures & static meshes** lists optional asset packs for map makers, including textures, meshes, sounds and animations. Install or update them like maps. Packs stay installed because maps may depend on them.
 
 ### Backups
 

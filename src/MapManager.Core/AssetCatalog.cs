@@ -29,7 +29,7 @@ public static class AssetCatalog
                 var source = file.Source.Split('/');
                 if (source.Length != 4 || source[0] != "releases" || source[1] != "download" || !source[2].EndsWith("-" + entry.Version, StringComparison.Ordinal)
                     || !(port ? SafePaths.IsMapAsset(file.Destination) : SafePaths.IsEditorAsset(file.Destination)) || !paths.Add(file.Destination) || file.Size < 0 || file.Size > 2L * 1024 * 1024 * 1024)
-                    throw new InvalidDataException("Invalid asset download.");
+                    throw new InvalidDataException($"Invalid asset download in {entry.Id}: {file.Destination}.");
             }
         }
         return entries.Select(PortLayout.Normalize).GroupBy(p => p.Id)
