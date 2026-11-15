@@ -26,11 +26,22 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);timeout.CancelAfter(TimeSpan.FromSeconds(25));
         try
         {
-        using var response = await http.GetAsync("https://api.github.com/repos/Lumbridge/SCCT-Maps/git/trees/main?recursive=1", timeout.Token);
+        using var reference = await http.GetAsync("https://api.github.com/repos/Lumbridge/SCCT-Maps/git/ref/heads/main", timeout.Token);
+        if (reference.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
+            throw new IOException("GitHub's request limit was reached. Your downloaded maps still work offline; refresh again later.");
+        reference.EnsureSuccessStatusCode();
+        using var referenceJson = JsonDocument.Parse(await reference.Content.ReadAsStringAsync(timeout.Token));
+        var target = referenceJson.RootElement.GetProperty("object");
+        if (target.GetProperty("type").GetString() != "commit") throw new InvalidDataException("The map catalog branch does not identify a commit.");
+        string commit = target.GetProperty("sha").GetString()!;
+        CatalogParser.ValidateHash(commit);
+        using var response = await http.GetAsync($"https://api.github.com/repos/Lumbridge/SCCT-Maps/git/trees/{commit}?recursive=1", timeout.Token);
         if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
             throw new IOException("GitHub's request limit was reached. Your downloaded maps still work offline; refresh again later.");
         response.EnsureSuccessStatusCode();
-        var catalog = CatalogParser.Parse(await response.Content.ReadAsStringAsync(timeout.Token));
+        // The tree response's SHA identifies the directory tree, not a raw-file
+        // ref. Pin metadata and map downloads to the branch commit we resolved.
+        var catalog = CatalogParser.Parse(await response.Content.ReadAsStringAsync(timeout.Token), commit);
         catalog = MapNames.Apply(catalog, await MapNamesAsync(catalog.Commit, timeout.Token));
         try
         {

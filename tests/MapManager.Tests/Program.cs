@@ -351,14 +351,50 @@ Check(MapNames.Apply(new Catalog(a.Commit, DateTimeOffset.UtcNow, [b]), new Dict
 foreach (var bad in new[] { "", "[]", "\"text\"", "{\"ShipD\":", "null" })
     await Reject(() => { MapNames.Parse(bad);return Task.CompletedTask; }, "names file that is not a JSON object is rejected: " + (bad.Length == 0 ? "empty" : bad));
 
+// A directory tree SHA is not a valid raw GitHub ref. Resolve one branch
+// commit and use it for the tree, optional metadata and ordinary map bytes.
+{
+    string pinnedCommit = new('c', 40), directoryTree = new('d', 40);
+    var distinctTree = versionTree.DeepClone().AsObject();
+    distinctTree["sha"] = directoryTree;
+    var requests = new List<string>();
+    using var repository = new RepositoryClient(new HttpClient(new CatalogHttpHandler((request, token) =>
+    {
+        string url = request.RequestUri!.AbsoluteUri;
+        requests.Add(url);
+        if (url.EndsWith("/git/ref/heads/main")) return new HttpResponseMessage(HttpStatusCode.OK) {
+            Content = new StringContent(JsonSerializer.Serialize(new { @object = new { type = "commit", sha = pinnedCommit } })) };
+        if (url.EndsWith($"/git/trees/{pinnedCommit}?recursive=1")) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(distinctTree.ToJsonString()) };
+        if (url.Contains("/" + pinnedCommit + "/", StringComparison.Ordinal))
+        {
+            string body = url.EndsWith("/asset-catalog.json") ? JsonSerializer.Serialize(new[] { stockResources, releasedPort })
+                : url.EndsWith("/names.json") ? "{\"ShipD\":\"Commit Shipment\"}" : "0123456789";
+            return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(body) };
+        }
+        return new HttpResponseMessage(HttpStatusCode.NotFound);
+    })));
+    Catalog pinned = await repository.FetchCatalogAsync(default);
+    MapEntry ordinary = pinned.Maps.Single(m => m.Id == "original/ShipD");
+    Check(pinned.Commit == pinnedCommit && ordinary.Commit == pinnedCommit && ordinary.Name == "Commit Shipment",
+        "catalog, map bytes and display metadata pin the branch commit instead of the directory tree SHA");
+    Check(pinned.Warning.Length == 0 && pinned.Maps.Any(m => m.Id == casino.Id) && pinned.AssetPacks.Any(m => m.Id == stockResources.Id),
+        "release-hosted ports and assets are discovered when tree raw URLs return404 and commit URLs return200");
+    string downloaded = Path.Combine(Fixture("commit-ref-download"), "map.sdc");
+    await repository.DownloadAsync(ordinary, ordinary.Files.First(f => f.Destination.EndsWith(".sdc")), downloaded, default);
+    Check(File.ReadAllText(downloaded) == "0123456789" && requests.All(url => !url.Contains("/" + directoryTree + "/", StringComparison.Ordinal)),
+        "ordinary map downloads also use the pinned commit and never the tree ref");
+}
+
 // Optional release-hosted assets must not discard a successfully refreshed map tree.
 var invalidManifest = JsonSerializer.Serialize(new[] { stockResources with { Files = [stockResources.Files[0] with { Destination = "System/hack.exe" }] } });
+var branchReferenceJson = JsonSerializer.Serialize(new { @object = new { type = "commit", sha = a.Commit } });
 foreach (var scenario in new[] { "valid", "missing", "invalid-file", "bad-json", "unavailable", "timeout" })
 {
     var refreshRoot = Fixture("catalog-refresh-" + scenario);
     using var repository = new RepositoryClient(new HttpClient(new CatalogHttpHandler((request, token) =>
     {
         var path = request.RequestUri!.AbsolutePath;
+        if (path.EndsWith("/git/ref/heads/main")) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(branchReferenceJson) };
         if (path.EndsWith("/names.json")) return new HttpResponseMessage(HttpStatusCode.NotFound);
         if (!path.EndsWith("/asset-catalog.json")) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(versionTree.ToJsonString()) };
         if (scenario == "timeout") throw new OperationCanceledException("asset request timed out", token);
@@ -383,6 +419,7 @@ foreach (var scenario in new[] { "valid", "missing", "invalid-file", "bad-json",
 using (var cancellation = new CancellationTokenSource())
 using (var repository = new RepositoryClient(new HttpClient(new CatalogHttpHandler((request, token) =>
 {
+    if (request.RequestUri!.AbsolutePath.EndsWith("/git/ref/heads/main")) return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(branchReferenceJson) };
     if (request.RequestUri!.AbsolutePath.EndsWith("/asset-catalog.json")) { cancellation.Cancel();throw new OperationCanceledException(token); }
     return request.RequestUri.AbsolutePath.EndsWith("/names.json") ? new HttpResponseMessage(HttpStatusCode.NotFound)
         : new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(versionTree.ToJsonString()) };
