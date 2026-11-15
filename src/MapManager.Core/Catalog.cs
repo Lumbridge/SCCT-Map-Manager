@@ -48,12 +48,14 @@ public static class CatalogPresentation
 public static class CatalogParser
 {
     private sealed record Blob(string Path, string Hash, long Size);
-    public static Catalog Parse(string json)
+    public static Catalog Parse(string json, string? commit = null)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
         if (root.GetProperty("truncated").GetBoolean()) throw new InvalidDataException("GitHub returned an incomplete catalog. Please retry later.");
-        var commit = root.GetProperty("sha").GetString()!;
+        string tree = root.GetProperty("sha").GetString()!;
+        ValidateHash(tree);
+        commit ??= tree;
         ValidateHash(commit);
         var blobs = root.GetProperty("tree").EnumerateArray().Where(x => x.GetProperty("type").GetString() == "blob")
             .Select(x => new Blob(x.GetProperty("path").GetString()!, x.GetProperty("sha").GetString()!, x.GetProperty("size").GetInt64())).ToList();
