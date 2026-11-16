@@ -27,6 +27,51 @@ Check(ordered.Select(m => m.Id).SequenceEqual(new[] { a.Id, jpZulu.Id, b.Id }), 
 Check(ordered.Take(2).All(m => m.Category == "JP's Maps") && ordered[2].Category == "Community", "cached Originals entries display as JP's Maps without changing other collections");
 Check(ordered[0].Id == a.Id && ordered[0].Fingerprint == a.Fingerprint, "collection rename preserves installed identity and content fingerprint");
 
+var ps2Old = client.Map("ports/chaos-theory-ps2/station-neutralization", "GAR09PN", "ps2-console-v1", "ps2-shared")
+    with { Name = "PS2 Station (Neutralization)", Category = "Ports", Version = "v1.0.0", Game = "Chaos Theory PS2" };
+var ps2New = client.Map(ps2Old.Id, "GAR09PN", "ps2-console-v2", "ps2-shared")
+    with { Name = ps2Old.Name, Category = "Ports", Version = "v1.0.1", Game = ps2Old.Game };
+var anotherPort = ps2Old with { Id = "ports/rainbow-six-vegas/station", Category = "Ports" };
+var prefixNeighbor = ps2Old with { Id = "ports/chaos-theory-ps20/station", Category = "Ports" };
+var ps2Ordered = CatalogPresentation.Order(new[] { anotherPort, ps2Old, prefixNeighbor, jpZulu }).ToList();
+Check(ps2Ordered.First().Id == jpZulu.Id && ps2Ordered.Single(m => m.Id == ps2Old.Id).Category == "PS2 Version",
+    "PS2 maps have the exact separate collection and JP maps remain pinned first");
+Check(ps2Ordered.Where(m => m.Id != jpZulu.Id && m.Id != ps2Old.Id).All(m => m.Category == "Ports"),
+    "PS2 collection matches the complete namespace prefix without relabeling other ports");
+var normalizedPs2 = CatalogPresentation.Normalize(ps2Old);
+Check(normalizedPs2.Id == ps2Old.Id && normalizedPs2.Fingerprint == ps2Old.Fingerprint
+    && normalizedPs2.Commit == ps2Old.Commit && normalizedPs2.NotesPath == ps2Old.NotesPath && ReferenceEquals(normalizedPs2.Files, ps2Old.Files),
+    "PS2 category normalization preserves ownership identity, content hashes and pinned download metadata");
+var cachedPs2Catalog = new Catalog(ps2Old.Commit, DateTimeOffset.UtcNow, [ps2New, anotherPort])
+    { Versions = new() { [ps2Old.Id] = [ps2New, ps2Old] } };
+var ps2Root = Fixture("ps2-category-cache");
+Dictionary<string, string> ps2Ownership;
+using (var store = new MapStore(ps2Root, client))
+{
+    await store.EnableAsync(ps2Old, false, null, default);
+    ps2Ownership = new(store.State.Installed[ps2Old.Id].Files);
+}
+File.WriteAllText(Path.Combine(ps2Root, "System/SCCTMapManagerData/catalog.json"), JsonSerializer.Serialize(cachedPs2Catalog));
+Check(File.ReadAllText(Path.Combine(ps2Root, "System/SCCTMapManagerData/state.json")).Contains("\"Ports\""),
+    "PS2 migration fixture contains an installed and downloaded pre-filter entry");
+using (var store = new MapStore(ps2Root, client))
+{
+    Check(store.Catalog!.Maps.Single(m => m.Id == ps2Old.Id).Category == CatalogPresentation.Ps2Version
+        && store.Catalog.VersionsOf(ps2New).All(m => m.Category == CatalogPresentation.Ps2Version)
+        && store.State.Installed[ps2Old.Id].Entry.Category == CatalogPresentation.Ps2Version
+        && store.State.Downloads[ps2Old.Id].Category == CatalogPresentation.Ps2Version,
+        "saved catalogs, complete version histories, installed records and downloads normalize PS2 categories offline");
+    Check(store.State.Installed[ps2Old.Id].Files.OrderBy(p => p.Key).SequenceEqual(ps2Ownership.OrderBy(p => p.Key))
+        && Read(ps2Root, "Packages/Maps/GAR09PN.sdc") == "ps2-console-v1"
+        && !store.HasUpdate(normalizedPs2) && store.Status(normalizedPs2) == "Enabled",
+        "normalizing cached PS2 entries leaves installed ownership, bytes and current-version status intact");
+    await store.EnableAsync(ps2New, false, null, default);
+    Check(store.PrimaryAction(ps2New, normalizedPs2) == MapAction.Switch, "older PS2 release remains a selectable version of the same installed map");
+    await store.ApplyAsync(MapAction.Switch, normalizedPs2, false, null, default);
+    Check(store.State.Installed.Count == 1 && store.State.Installed[ps2Old.Id].Entry.Fingerprint == ps2Old.Fingerprint
+        && Read(ps2Root, "Packages/Maps/GAR09PN.sdc") == "ps2-console-v1", "switching a PS2 version preserves its ID and restores its exact cached bytes");
+}
+
 
 foreach (var path in new[] { "../escape", "Packages/Maps/../../escape", "Packages/Maps/C:.sdc", "Packages/Maps/CON.sdc", "Packages/Maps/name. ", "Packages\\Maps\\a.sdc", "/absolute" })
     await Reject(() => { SafePaths.ValidateRelative(path);return Task.CompletedTask; }, "reject unsafe path " + path);

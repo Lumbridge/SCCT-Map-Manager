@@ -17,6 +17,7 @@ The manager checks for new versions when it starts. When one is available, an **
 ## Using it
 
 - Pick a map from the list (search or filter by collection) and press the main button. It changes to fit the map: **Enable map** downloads, verifies and installs it; **Update to vX** installs a newer release; **Repair map** puts back missing files.
+- Choose **PS2 Version** to browse the PS2 maps and their separately listed game modes.
 - **Disable map** takes it out of play; enable it again any time.
 - **More** holds the less common actions: **Download for later** saves a map without enabling it, and **Reinstall files** installs the enabled version again.
 - When maps you have get a new version, a yellow bar above the list says how many. **Update all** updates them in one go (enabled maps are replaced, others are downloaded ready for later); **Show which** lists them. Outdated maps show their versions as `v1.2 → v1.5` in the list.

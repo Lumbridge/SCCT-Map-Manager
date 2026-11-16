@@ -121,7 +121,7 @@ public sealed class MainForm : Form
         header.Controls.Add(target, 0, 1);header.Controls.Add(backups, 1, 1);outer.Controls.Add(header, 0, 0);
         var filters = Table(3, 54, 23, 23);filters.AutoSize = false;filters.Padding = new Padding(0, 6, 0, 12);
         filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));filters.RowStyles.Add(new RowStyle(SizeType.Absolute, 36));
-        category.Items.AddRange(["All collections", CatalogPresentation.JpMaps, "Community", "Enhanced", "Recovered", "Ports"]);category.SelectedIndex = 0;
+        category.Items.AddRange(["All collections", CatalogPresentation.JpMaps, "Community", "Enhanced", "Recovered", "Ports", CatalogPresentation.Ps2Version]);category.SelectedIndex = 0;
         statusFilter.Items.AddRange(["All maps", "Enabled", "Disabled", "Updates available", "Downloaded", "Not downloaded"]);statusFilter.SelectedIndex = 0;
         filters.Controls.Add(new Label { Text = "Search maps", AutoSize = true }, 0, 0);filters.Controls.Add(new Label { Text = "Collection", AutoSize = true }, 1, 0);filters.Controls.Add(new Label { Text = "Show", AutoSize = true }, 2, 0);
         filters.Controls.Add(search, 0, 1);filters.Controls.Add(category, 1, 1);filters.Controls.Add(statusFilter, 2, 1);outer.Controls.Add(filters, 0, 1);
@@ -182,6 +182,8 @@ public sealed class MainForm : Form
         grid.CellPainting += PaintPinnedMap;
         grid.ColumnHeaderMouseClick += (_, e) => SortRows(e.ColumnIndex);
         grid.SelectionChanged += (_, _) => { if (!filling) NotesLoad = Detail(); };
+        // SelectionChanged precedes CurrentCellChanged; refresh again after the newly selected row becomes current.
+        grid.CurrentCellChanged += (_, _) => { if (!filling) NotesLoad = Detail(); };
         version.SelectedIndexChanged += (_, _) => { if (!fillingVersions) NotesLoad = VersionDetail(); };
         refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
@@ -501,7 +503,7 @@ public sealed class MainForm : Form
         version.Enabled = version.Items.Count > 1 && !busy;
         if (map == null || chosen == null)
         {
-            mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");
+            mapName.Text = "Your map library";metadata.Text = "JP's Maps • Community • Enhanced • Recovered • Ports • PS2 Version";summary.Text = "Refresh the catalog to browse available maps.";MarkdownView.Render(notes, "");
             source.Enabled = false;primary.Enabled = false;disable.Visible = more.Visible = updateNotice.Visible = false;return;
         }
         mapName.Text = map.Name;metadata.Text = $"{map.Category}{(map.IsPort ? $"  /  From {map.Game}" : "")}  /  {chosen.Version}\n{chosen.Packages}  •  {SizeText(chosen.Bytes)}  •  {chosen.Files.Count} files";
@@ -623,6 +625,7 @@ public sealed class MainForm : Form
     private static string SizeText(long bytes) => bytes >= 1024 * 1024 * 1024 ? $"{bytes / (1024.0 * 1024 * 1024):0.0} GB" : $"{bytes / (1024.0 * 1024):0.0} MB";
     public async Task<string> SmokeAsync(string? artifact = null)
     {
+        await SmokePs2FilterAsync(artifact);
         var allMaps = grid.Rows.Cast<DataGridViewRow>().Select(row => (MapEntry)row.Tag!).ToList();
         int jpCount = allMaps.Count(CatalogPresentation.IsJpMap);
         if (jpCount == 0 || !allMaps.Take(jpCount).All(CatalogPresentation.IsJpMap)) throw new InvalidOperationException("JP's Maps are not pinned first.");
@@ -725,7 +728,58 @@ public sealed class MainForm : Form
         }
         await NotesLoad;
         return $"Collection: {category.Text}\nShow: {statusFilter.Text}\nSelected: {Selected?.Name}\nVersions offered: {version.Items.Count} (newest {Selected?.Version}, oldest {oldest})\n" +
-            $"Main action: {primary.Text}\nDisable shown: {disable.Visible}\nMap and asset filter, search, version picker, multi-select, update display and action button checks passed.";
+            $"Main action: {primary.Text}\nDisable shown: {disable.Visible}\nMap and asset filter, search, version picker, multi-select, update display and action button checks passed. PS2 Version includes cached maps and historical versions without changing installed ownership.";
+    }
+    private async Task SmokePs2FilterAsync(string? artifact)
+    {
+        // Temporary in-memory rows exercise the real controls; no map bytes or saved ownership records change.
+        const string id = "ports/chaos-theory-ps2/__ui-filter-mode", cachedId = "ports/chaos-theory-ps2/__ui-filter-cached";
+        var catalog = store.Catalog ?? throw new InvalidOperationException("PS2 filter smoke needs a catalog.");
+        if (catalog.Maps.Any(m => m.Id == id || m.Id == cachedId) || catalog.Versions.ContainsKey(id)
+            || store.State.Installed.ContainsKey(id) || store.State.Downloads.ContainsKey(cachedId))
+            throw new InvalidOperationException("PS2 filter fixture IDs already exist.");
+        var latest = new MapEntry(id, "PS2 Station (Extraction) — filter fixture", "Ports", "v1.0.1", catalog.Commit, "README.md",
+            [new MapFile("fixture.sdc", "Packages/Maps/FilterFixture.sdc", new string('a', 40), 1)]) { Game = "Chaos Theory PS2" };
+        var older = latest with { Version = "v1.0.0", Files = [latest.Files[0] with { Hash = new string('b', 40) }] };
+        var cached = older with { Id = cachedId, Name = "PS2 cached offline — filter fixture" };
+        var installed = new InstalledMap { Entry = older, Enabled = false };
+        catalog.Maps.Add(latest);catalog.Versions[id] = [latest, older];
+        store.State.Installed[id] = installed;store.State.Downloads[cachedId] = cached;
+        try
+        {
+            FillMaps();category.SelectedItem = CatalogPresentation.Ps2Version;await NotesLoad;
+            var shown = grid.Rows.Cast<DataGridViewRow>().Select(r => (MapEntry)r.Tag!).ToList();
+            if (category.Text != "PS2 Version" || !shown.Any(m => m.Id == cachedId) || !shown.Any(m => m.Id == id)
+                || shown.Any(m => !CatalogPresentation.IsPs2Map(m) || m.Category != CatalogPresentation.Ps2Version))
+                throw new InvalidOperationException("PS2 Version filter omitted cached entries or included another collection.");
+            var row = grid.Rows.Cast<DataGridViewRow>().Single(r => ((MapEntry)r.Tag!).Id == id);grid.CurrentCell = row.Cells[0];await NotesLoad;
+            if (version.Items.Count != 2 || version.Items.Cast<VersionChoice>().Any(v => v.Entry.Category != CatalogPresentation.Ps2Version))
+                throw new InvalidOperationException($"Historical PS2 versions lost their collection (selected {Selected?.Id}, count {version.Items.Count}, choices {string.Join(", ", version.Items.Cast<VersionChoice>().Select(v => v.Entry.Version + ":" + v.Entry.Category))}).");
+            version.SelectedIndex = 1;await NotesLoad;
+            if (Chosen?.Version != older.Version || Chosen.Id != id || Chosen.Fingerprint != older.Fingerprint || !metadata.Text.Contains(older.Version))
+                throw new InvalidOperationException("PS2 version selection changed map identity or selected the wrong content.");
+            statusFilter.SelectedItem = "Disabled";await NotesLoad;
+            if (!grid.Rows.Cast<DataGridViewRow>().Any(r => ((MapEntry)r.Tag!).Id == id))
+                throw new InvalidOperationException("Installed PS2 entry disappeared from the status filter.");
+            statusFilter.SelectedIndex = 0;search.Text = "filter fixture";await NotesLoad;
+            if (grid.Rows.Count != 2) throw new InvalidOperationException("PS2 filter and search did not compose.");
+            if (artifact != null)
+            {
+                Directory.CreateDirectory(artifact);PerformLayout();Refresh();
+                using var bitmap = new Bitmap(Width, Height);DrawToBitmap(bitmap, new Rectangle(Point.Empty, Size));
+                bitmap.Save(Path.Combine(artifact, "ps2-version-filter.png"));
+            }
+            search.Clear();category.SelectedItem = "Ports";await NotesLoad;
+            if (grid.Rows.Cast<DataGridViewRow>().Any(r => CatalogPresentation.IsPs2Map((MapEntry)r.Tag!)))
+                throw new InvalidOperationException("PS2 entries leaked into the ordinary Ports filter.");
+            if (!ReferenceEquals(store.State.Installed[id], installed) || installed.Enabled || installed.Entry.Fingerprint != older.Fingerprint)
+                throw new InvalidOperationException("Filtering changed installed PS2 ownership.");
+        }
+        finally
+        {
+            catalog.Maps.Remove(latest);catalog.Versions.Remove(id);store.State.Installed.Remove(id);store.State.Downloads.Remove(cachedId);
+            search.Clear();category.SelectedIndex = 0;statusFilter.SelectedIndex = 0;FillMaps();await NotesLoad;
+        }
     }
     private sealed class AssetSmokeRepository : IRepositoryClient
     {
