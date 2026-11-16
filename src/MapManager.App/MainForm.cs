@@ -182,6 +182,8 @@ public sealed class MainForm : Form
         grid.CellPainting += PaintPinnedMap;
         grid.ColumnHeaderMouseClick += (_, e) => SortRows(e.ColumnIndex);
         grid.SelectionChanged += (_, _) => { if (!filling) NotesLoad = Detail(); };
+        // SelectionChanged precedes CurrentCellChanged; refresh again after the newly selected row becomes current.
+        grid.CurrentCellChanged += (_, _) => { if (!filling) NotesLoad = Detail(); };
         version.SelectedIndexChanged += (_, _) => { if (!fillingVersions) NotesLoad = VersionDetail(); };
         refresh.Click += async (_, _) => await Run("Refreshing the catalog…", ct => store.RefreshAsync(ct));
         repo.Click += (_, _) => Open(RepositoryClient.RepositoryUrl);
@@ -752,7 +754,7 @@ public sealed class MainForm : Form
                 throw new InvalidOperationException("PS2 Version filter omitted cached entries or included another collection.");
             var row = grid.Rows.Cast<DataGridViewRow>().Single(r => ((MapEntry)r.Tag!).Id == id);grid.CurrentCell = row.Cells[0];await NotesLoad;
             if (version.Items.Count != 2 || version.Items.Cast<VersionChoice>().Any(v => v.Entry.Category != CatalogPresentation.Ps2Version))
-                throw new InvalidOperationException("Historical PS2 versions lost their collection.");
+                throw new InvalidOperationException($"Historical PS2 versions lost their collection (selected {Selected?.Id}, count {version.Items.Count}, choices {string.Join(", ", version.Items.Cast<VersionChoice>().Select(v => v.Entry.Version + ":" + v.Entry.Category))}).");
             version.SelectedIndex = 1;await NotesLoad;
             if (Chosen?.Version != older.Version || Chosen.Id != id || Chosen.Fingerprint != older.Fingerprint || !metadata.Text.Contains(older.Version))
                 throw new InvalidOperationException("PS2 version selection changed map identity or selected the wrong content.");
