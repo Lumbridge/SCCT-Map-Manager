@@ -30,16 +30,23 @@ public record Catalog(string Commit, DateTimeOffset CheckedAt, List<MapEntry> Ma
     // Every published version per map ID, newest first. Maps and AssetPacks hold only the newest.
     public Dictionary<string, List<MapEntry>> Versions { get; init; } = new(StringComparer.Ordinal);
     public IReadOnlyList<MapEntry> VersionsOf(MapEntry map) =>
-        Versions.TryGetValue(map.Id, out var all) && all.Count > 0 ? all : [map];
+        (Versions.TryGetValue(map.Id, out var all) && all.Count > 0 ? all : [map]).Select(CatalogPresentation.Normalize).ToList();
 }
 public record TransferProgress(string Message, int Completed, int Total, long Bytes = 0);
 
 public static class CatalogPresentation
 {
     public const string JpMaps = "JP's Maps";
+    public const string Ps2Version = "PS2 Version";
     public static bool IsJpMap(MapEntry map) => map.Id.StartsWith("original/", StringComparison.Ordinal);
+    public static bool IsPs2Map(MapEntry map) => map.Id.StartsWith("ports/chaos-theory-ps2/", StringComparison.Ordinal);
+    public static MapEntry Normalize(MapEntry map)
+    {
+        string category = IsJpMap(map) ? JpMaps : IsPs2Map(map) ? Ps2Version : map.Category;
+        return map.Category == category ? map : map with { Category = category };
+    }
     public static IEnumerable<MapEntry> Order(IEnumerable<MapEntry> maps) => maps
-        .Select(m => IsJpMap(m) ? m with { Category = JpMaps } : m)
+        .Select(Normalize)
         .OrderByDescending(IsJpMap)
         .ThenBy(m => m.Name, StringComparer.OrdinalIgnoreCase)
         .ThenBy(m => m.Category, StringComparer.OrdinalIgnoreCase);
