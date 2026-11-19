@@ -40,7 +40,7 @@ Earlier versions replaced these files without asking, and v0.4.5 and earlier cou
 
 ### Backups
 
-Everything the manager downloads, disables or backs up lives in `System/SCCTMapManagerData`; keep that folder. **Open backups** shows it. The manager refuses to overwrite maps you have edited yourself.
+Everything the manager downloads, disables or backs up lives in `System/SCCTMapManagerData`; keep that folder. **Open backups** shows it. If a map update would overwrite or remove a locally edited file, choose **Keep local changes** to skip that map or **Overwrite anyway** to continue. The manager backs up the edited files before applying the update.
 
 ## For map publishers
 

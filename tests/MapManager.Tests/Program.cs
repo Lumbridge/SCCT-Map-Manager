@@ -669,7 +669,13 @@ using (var store = new MapStore(externalUpdateRoot, client))
 // Update all
 var bravoUpdate = client.Map("community/B", "Bravo", "bravo-v2", "shared-v1");
 var allRoot = Fixture("update-all");
-using (var store = new MapStore(allRoot, client))
+bool overwriteEdits = false;
+var updateWarnings = new List<(string MapId, string[] Paths)>();
+using (var store = new MapStore(allRoot, client, confirmLocalChanges: (map, paths) =>
+{
+    updateWarnings.Add((map.Id, paths.ToArray()));
+    return overwriteEdits;
+}))
 {
     await store.EnableAsync(a, true, null, default);await store.DownloadAsync(b, false, null, default);
     store.UseFallbackCatalog(new Catalog(a.Commit, DateTimeOffset.UtcNow, [update, bravoUpdate, client.Map("enhanced/C", "Charlie", "charlie", "shared-v1")]));
@@ -683,12 +689,66 @@ using (var store = new MapStore(allRoot, client))
     Check(messages.Any(m => m.StartsWith("1 of 2 • Alpha")) && messages.Any(m => m.StartsWith("2 of 2 • Bravo")), "update all reports which map it is on");
     var alphaV3 = client.Map("original/A", "Alpha", "alpha-v3", "shared-v1", true);var bravoV3 = client.Map("community/B", "Bravo", "bravo-v3", "shared-v1");
     Put(allRoot, "Packages/Maps/Alpha.sdc", "local playable changes");
+    Put(allRoot, "Packages/MapsEd/Alpha.sdc", "local source changes");
     failed = await store.UpdateAllAsync([alphaV3, bravoV3], null, default);
-    Check(failed.Count == 1 && failed[0].Map.Id == a.Id && Read(allRoot, "Packages/Maps/Alpha.sdc") == "local playable changes" && store.State.Downloads[b.Id].Fingerprint == bravoV3.Fingerprint,
-        "one map with local edits is skipped and the rest still update");
+    Check(updateWarnings.Count == 1 && updateWarnings[0].MapId == a.Id
+        && updateWarnings[0].Paths.Order(StringComparer.Ordinal).SequenceEqual(["Packages/Maps/Alpha.sdc", "Packages/MapsEd/Alpha.sdc"]),
+        "update all asks once for the map and identifies both edited files");
+    Check(failed.Count == 1 && failed[0].Map.Id == a.Id && failed[0].Skipped && store.State.Installed[a.Id].Entry.Fingerprint == update.Fingerprint
+        && Read(allRoot, "Packages/Maps/Alpha.sdc") == "local playable changes" && Read(allRoot, "Packages/MapsEd/Alpha.sdc") == "local source changes"
+        && store.State.Downloads[b.Id].Fingerprint == bravoV3.Fingerprint, "declining leaves the edited files intact and the other map still updates");
+    overwriteEdits = true;
+    failed = await store.UpdateAllAsync([alphaV3], null, default);
+    Check(failed.Count == 0 && store.State.Installed[a.Id].Enabled && store.State.Installed[a.Id].Entry.Fingerprint == alphaV3.Fingerprint
+        && Read(allRoot, "Packages/Maps/Alpha.sdc") == "alpha-v3" && Read(allRoot, "Packages/MapsEd/Alpha.sdc") == "source alpha-v3",
+        "confirming overwrites the edited files and keeps the map enabled");
+    var backedUpMaps = Directory.GetFiles(Path.Combine(store.DataRoot, "Backups"), "*.sdc", SearchOption.AllDirectories).Select(File.ReadAllText).ToList();
+    Check(backedUpMaps.Contains("local playable changes") && backedUpMaps.Contains("local source changes"), "confirmed updates back up both locally edited copies");
 }
 using (var store = new MapStore(Fixture("update-all-guard"), client, () => throw new IOException("game running")))
     await Reject(() => store.UpdateAllAsync([update], null, default), "update all stops before starting while the game is running");
+
+var singleUpdateRoot = Fixture("update-confirm-local-edits");
+const string editedMap = "Packages/Maps/Alpha.sdc";
+const string editedTexture = "Packages/Textures/Shared.utx";
+const string obsoleteMenu = "Packages/Textures/Alpha-i.utc";
+const string extraGameFile = "Packages/Textures/Additional.utx";
+var extraAsset = update.Files.Single(f => f.Destination == editedTexture) with { Destination = extraGameFile };
+var updateWithExtra = update with { Files = [..update.Files.Where(f => f.Destination != obsoleteMenu), extraAsset] };
+int localWarnings = 0;
+IReadOnlyList<string> localPaths = [];
+using (var store = new MapStore(singleUpdateRoot, client, confirmLocalChanges: (_, paths) =>
+{
+    localPaths = paths;
+    if (++localWarnings == 1) Put(singleUpdateRoot, editedMap, "newer local changes");
+    return true;
+}))
+{
+    Put(singleUpdateRoot, obsoleteMenu, "original menu");
+    await store.EnableAsync(a, false, null, default, replaceGameFiles: true);
+    Put(singleUpdateRoot, editedMap, "local changes");
+    Put(singleUpdateRoot, editedTexture, "local texture changes");
+    Put(singleUpdateRoot, obsoleteMenu, "local menu changes");
+    Put(singleUpdateRoot, extraGameFile, "stock texture");
+    Check(await AsksFirst(() => store.ApplyAsync(MapAction.Update, updateWithExtra, false, null, default)) && localWarnings == 0,
+        "an update asks for separate consent to replace existing game files before asking about local edits");
+    await Reject(() => store.ApplyAsync(MapAction.Update, updateWithExtra, false, null, default, replaceGameFiles: true),
+        "an approval cannot overwrite map bytes that changed during the confirmation");
+    Check(localWarnings == 1 && store.State.Installed[a.Id].Entry.Fingerprint == a.Fingerprint
+        && Read(singleUpdateRoot, editedMap) == "newer local changes" && Read(singleUpdateRoot, extraGameFile) == "stock texture",
+        "an edit made during confirmation leaves the map and stock file in place");
+    await store.ApplyAsync(MapAction.Update, updateWithExtra, false, null, default, replaceGameFiles: true);
+    Check(localWarnings == 2 && Read(singleUpdateRoot, editedMap) == "alpha-v2" && Read(singleUpdateRoot, extraGameFile) == "shared-v1",
+        "reconfirming the single-map update installs after both approvals");
+    Check(localPaths.Contains(obsoleteMenu) && Read(singleUpdateRoot, obsoleteMenu) == "original menu"
+        && Directory.GetFiles(Path.Combine(store.DataRoot, "Backups"), "Alpha-i.utc", SearchOption.AllDirectories).Any(f => File.ReadAllText(f) == "local menu changes"),
+        "removing an edited package from a map version backs up its edits and restores the original game file");
+    Check(localPaths.Contains(editedTexture) && (await store.FindReplacedGameFilesAsync(default)).All(f => f.Path != editedTexture),
+        "the original game file scanner never offers a backup of local edits");
+    await store.DisableAsync(updateWithExtra, default);
+    Check(!File.Exists(SafePaths.Under(singleUpdateRoot, editedMap)) && Read(singleUpdateRoot, extraGameFile) == "stock texture",
+        "disabling the updated map removes the playable package and restores the stock file");
+}
 
 // Self-updater
 string ReleaseJson(string tag, string exeUrl, string? digest = null, bool sums = true, bool prerelease = false)
