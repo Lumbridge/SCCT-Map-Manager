@@ -60,7 +60,7 @@ public sealed class MainForm : Form
 
     public MainForm(string root, IRepositoryClient repository, AppUpdater? updater = null, bool checkForUpdates = false)
     {
-        this.repository = repository;this.updater = updater;store = new MapStore(root, repository, () => Program.GuardGame(root));
+        this.repository = repository;this.updater = updater;store = new MapStore(root, repository, () => Program.GuardGame(root), ConfirmLocalChanges);
         SeedCatalog();
         Text = $"SCCT Map Manager {AppVersion}";Font = new Font("Segoe UI", 10);ForeColor = Ink;BackColor = Pale;
         AutoScaleDimensions = new SizeF(96, 96);AutoScaleMode = AutoScaleMode.Dpi;MinimumSize = new Size(1050, 800);Size = new Size(1280, 900);StartPosition = FormStartPosition.CenterScreen;
@@ -216,7 +216,7 @@ public sealed class MainForm : Form
             if (picker.ShowDialog(this) != DialogResult.OK || Path.GetFullPath(picker.SelectedPath) == store.GameRoot) return;
             try
             {
-                string root = picker.SelectedPath;var replacement = new MapStore(root, repository, () => Program.GuardGame(root));
+                string root = picker.SelectedPath;var replacement = new MapStore(root, repository, () => Program.GuardGame(root), ConfirmLocalChanges);
                 store.Dispose();store = replacement;SeedCatalog();target.Text = store.GameRoot;FillMaps();_ = Run("Checking the catalog…", ct => store.RefreshAsync(ct));
             }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "Cannot open installation", MessageBoxButtons.OK, MessageBoxIcon.Error); }
@@ -302,6 +302,7 @@ public sealed class MainForm : Form
         bool succeeded = false;
         busy = true;operation = new CancellationTokenSource();SetBusy();operationStatus.Text = message;progress.Style = ProgressBarStyle.Marquee;
         try { await Task.Run(() => action(operation.Token));operationStatus.Text = "Done. " + store.CatalogMessage;succeeded = true; }
+        catch (LocalChangesKeptException ex) { operationStatus.Text = ex.Message; }
         catch (OperationCanceledException) { operationStatus.Text = "Cancelled. Any in-progress installation was rolled back."; }
         catch (Exception ex)
         {
@@ -396,7 +397,9 @@ public sealed class MainForm : Form
             if (blocked.Count == 0 || !AllowReplacing(blocked.SelectMany(f => f.GameFiles).Distinct(StringComparer.OrdinalIgnoreCase).ToList(), blocked.Count == 1 ? blocked[0].Map.Name : $"{blocked.Count} maps")) return;
             failures = failures.Except(blocked).Concat(await store.UpdateAllAsync(blocked.Select(f => f.Map).ToList(), reporter, ct, replaceGameFiles: true)).ToList();
         }) || failures.Count == 0 || closing || IsDisposed) return;
-        operationStatus.Text = $"Updated {pending.Count - failures.Count} of {pending.Count} maps.";
+        int skipped = failures.RemoveAll(f => f.Skipped);
+        operationStatus.Text = $"Updated {pending.Count - failures.Count - skipped} of {pending.Count} maps." + SkippedMessage(skipped);
+        if (failures.Count == 0) return;
         MessageBox.Show(this, "These maps were not updated:\n\n" + string.Join("\n\n", failures.Take(8).Select(f => $"{f.Map.Name}: {f.Message}")) + (failures.Count > 8 ? $"\n\n…and {failures.Count - 8} more." : ""),
             "Some updates stopped", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
@@ -561,12 +564,34 @@ public sealed class MainForm : Form
             var retry = steps.Where(s => blocked.Any(f => f.Map.Id == s.Map.Id)).ToList();
             failures = failures.Except(blocked).Concat(await store.RunBulkAsync(retry, action, reporter, ct, replaceGameFiles: true)).ToList();
         }) || failures.Count == 0 || closing || IsDisposed) return;
-        operationStatus.Text = $"{steps.Count - failures.Count} of {steps.Count} maps done. {failures.Count} could not be changed.";
+        int skipped = failures.RemoveAll(f => f.Skipped);
+        operationStatus.Text = $"{steps.Count - failures.Count - skipped} of {steps.Count} maps done." + SkippedMessage(skipped);
+        if (failures.Count == 0) return;
         // Maps that failed for the same reason, such as the game running, are listed together.
         var reasons = failures.GroupBy(f => f.Message).Select(g => $"{string.Join(", ", g.Select(f => f.Map.Name))}:\n{g.Key}").ToList();
         var more = reasons.Count > 8 ? $"\n\n…and {reasons.Count - 8} more." : "";
-        MessageBox.Show(this, $"{failures.Count} of {steps.Count} maps could not be changed. The others were.\n\n{string.Join("\n\n", reasons.Take(8))}{more}", "Some maps were not changed", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        MessageBox.Show(this, $"{failures.Count} of {steps.Count} maps could not be changed.\n\n{string.Join("\n\n", reasons.Take(8))}{more}", "Some maps were not changed", MessageBoxButtons.OK, MessageBoxIcon.Information);
     }
+    private static string SkippedMessage(int count) => count == 0 ? "" : $" Skipped {count} {(count == 1 ? "map" : "maps")} to keep local changes.";
+
+    private bool ConfirmLocalChanges(MapEntry map, IReadOnlyList<string> paths) => Invoke(() =>
+    {
+        if (closing || IsDisposed || operation?.IsCancellationRequested == true) return false;
+        var keep = new TaskDialogButton("Keep local changes");
+        var overwrite = new TaskDialogButton("Overwrite anyway");
+        var shown = string.Join("\n", paths.Take(12)) + (paths.Count > 12 ? $"\n…and {paths.Count - 12} more" : "");
+        var page = new TaskDialogPage
+        {
+            Caption = "Local map changes",
+            Heading = $"Local changes detected in {map.Name}",
+            Text = "Continuing will overwrite or remove these edited files. You can find the backed-up copies under Open backups.\n\n" + shown,
+            Icon = TaskDialogIcon.Warning,
+            Buttons = { keep, overwrite },
+            DefaultButton = keep,
+            AllowCancel = true
+        };
+        return TaskDialog.ShowDialog(this, page) == overwrite;
+    });
     // Runs an install; if it would replace files already in the game, asks and runs it again with the user's agreement.
     // The store changes nothing before asking, so declining leaves the game as it was.
     private async Task AskingForGameFiles(string what, Func<bool, Task> action)
