@@ -5,8 +5,8 @@ Download, enable and update maps for **Splinter Cell: Chaos Theory Versus** from
 ![SCCT Map Manager](docs/images/map-manager.png)
 
 This tool manages maps in an original PC Versus installation. Its **PS2 Version** filter lists
-maps ported from PS2 to PC. For original PS2 disc setup, PC/Steam profiles and the modern Unreal
-client, see the [OpenSCCT project directory](https://github.com/OpenSCCT/OpenSCCT). To add a PC map
+maps ported from PS2 to PC. The [OpenSCCT project directory](https://github.com/OpenSCCT) covers PS2 disc setup
+and PC/Steam profiles under **Originals**, and the Godot and Unreal clients under **Modernisations**. To add a PC map
 to the manager, use the [publishing guide](docs/publishing.md).
 
 ## Install
