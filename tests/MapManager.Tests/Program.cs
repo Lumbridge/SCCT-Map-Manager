@@ -762,6 +762,10 @@ string ReleaseJson(string tag, string exeUrl, string? digest = null, bool sums =
 }
 var current = new Version(0, 4, 5, 0);
 var newer = AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"{AppUpdater.ReleasesUrl}/download/v0.5.0/{AppUpdater.ExeAsset}", "sha256:" + new string('A', 64)), current);
+const string previousReleases = "https://github.com/Lumbridge/SCCT-Map-Manager/releases";
+var previousOwner = AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"{previousReleases}/download/v0.5.0/{AppUpdater.ExeAsset}").Replace(AppUpdater.ReleasesUrl, previousReleases), current);
+Check(previousOwner?.ChecksumsUrl == $"{previousReleases}/download/v0.5.0/SHA256SUMS.txt", "updater accepts checksummed releases during the ownership transfer");
+await Reject(() => { AppUpdater.ParseLatest(ReleaseJson("v0.5.0", $"https://github.com/Other/SCCT-Map-Manager/releases/download/v0.5.0/{AppUpdater.ExeAsset}"), current);return Task.CompletedTask; }, "updater rejects other owners");
 Check(newer?.Version == new Version(0, 5, 0) && newer.Sha256 == new string('a', 64), "updater finds a newer release and its published digest");
 Check(AppUpdater.ParseLatest(ReleaseJson("v0.4.5", $"{AppUpdater.ReleasesUrl}/download/v0.4.5/{AppUpdater.ExeAsset}"), current) == null, "updater ignores the running version");
 Check(AppUpdater.ParseLatest(ReleaseJson("v0.4.4", $"{AppUpdater.ReleasesUrl}/download/v0.4.4/{AppUpdater.ExeAsset}"), current) == null, "updater never downgrades");

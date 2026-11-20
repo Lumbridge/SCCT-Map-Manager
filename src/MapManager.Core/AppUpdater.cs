@@ -10,9 +10,10 @@ public record AppRelease(Version Version, string Tag, string Notes, string PageU
 // Finds, verifies and swaps in new manager builds published on GitHub releases.
 public sealed class AppUpdater : IDisposable
 {
-    public const string ReleasesUrl = "https://github.com/Lumbridge/SCCT-Map-Manager/releases";
-    private const string LatestApi = "https://api.github.com/repos/Lumbridge/SCCT-Map-Manager/releases/latest";
-    private const string DownloadPrefix = ReleasesUrl + "/download/";
+    public const string ReleasesUrl = "https://github.com/OpenSCCT/SCCT-Map-Manager/releases";
+    private const string PreviousReleasesUrl = "https://github.com/Lumbridge/SCCT-Map-Manager/releases";
+    // GitHub's repository ID survives a transfer, including the interval before the new owner URL resolves.
+    private const string LatestApi = "https://api.github.com/repositories/1370235054/releases/latest";
     // GitHub replaces spaces in uploaded asset names with dots.
     public const string ExeAsset = "SCCT.Map.Manager.exe";
     public const string ExeName = "SCCT Map Manager.exe";
@@ -65,7 +66,7 @@ public sealed class AppUpdater : IDisposable
             sha = d.Groups[1].Value.ToLowerInvariant();
         var sumsUrl = sums is { } s ? TrustedUrl(s.GetProperty("browser_download_url").GetString()) : null;
         if (sha == null && sumsUrl == null) throw new InvalidDataException("The update has no checksum, so it cannot be verified.");
-        var page = root.TryGetProperty("html_url", out var html) && html.GetString() is { } h && h.StartsWith(ReleasesUrl + "/", StringComparison.Ordinal) ? h : ReleasesUrl + "/latest";
+        var page = root.TryGetProperty("html_url", out var html) && html.GetString() is { } h && IsReleaseUrl(h, "/tag/") ? h : ReleasesUrl + "/latest";
         var notes = root.TryGetProperty("body", out var body) ? body.GetString() ?? "" : "";
         return new AppRelease(version, tag, notes, page, url, size, sha, sumsUrl);
     }
@@ -141,10 +142,21 @@ public sealed class AppUpdater : IDisposable
 
     private static string TrustedUrl(string? url)
     {
-        if (url == null || !url.StartsWith(DownloadPrefix, StringComparison.Ordinal) || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Host != "github.com"
-            || !uri.AbsolutePath.StartsWith("/Lumbridge/SCCT-Map-Manager/releases/download/", StringComparison.Ordinal))
+        if (url == null || !IsReleaseUrl(url, "/download/"))
             throw new InvalidDataException("The update points outside the manager's GitHub releases.");
         return url;
+    }
+
+    private static bool IsReleaseUrl(string url, string route)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        foreach (var repository in new[] { ReleasesUrl, PreviousReleasesUrl })
+        {
+            var prefix = repository + route;
+            if (url.StartsWith(prefix, StringComparison.Ordinal)
+                && uri.GetLeftPart(UriPartial.Path).StartsWith(prefix, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
     private static Version Normalize(Version v) => new(v.Major, v.Minor, Math.Max(0, v.Build));
     public void Dispose() => http.Dispose();
