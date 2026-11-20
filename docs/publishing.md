@@ -1,6 +1,6 @@
 # Publishing maps and asset packs
 
-The manager reads the [SCCT-Maps](https://github.com/Lumbridge/SCCT-Maps) repository. Maps are picked up from its per-map `Packages` folders; ported maps live under `ports/<game-name>/<map-name>/` and appear in the **Ports** collection with their source game shown, while still installing into the normal SCCT `Packages` folders.
+The manager reads the [SCCT-Maps](https://github.com/OpenSCCT/SCCT-Maps) repository. Maps are picked up from its per-map `Packages` folders; ported maps live under `ports/<game-name>/<map-name>/` and appear in the **Ports** collection with their source game shown, while still installing into the normal SCCT `Packages` folders.
 
 ## Original maps
 

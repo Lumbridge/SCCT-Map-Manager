@@ -7,7 +7,7 @@ try {
         if ($LiveTests) {
             $null = New-Item -ItemType Directory -Path 'artifacts' -Force
             $catalogPath = Join-Path $PSScriptRoot 'artifacts/catalog-tree.json'
-            Invoke-WebRequest -Uri 'https://api.github.com/repos/Lumbridge/SCCT-Maps/git/trees/main?recursive=1' -Headers @{'User-Agent'='SCCT-Map-Manager-Build'} -OutFile $catalogPath
+            Invoke-WebRequest -Uri 'https://api.github.com/repos/OpenSCCT/SCCT-Maps/git/trees/main?recursive=1' -Headers @{'User-Agent'='SCCT-Map-Manager-Build'} -OutFile $catalogPath
             $testArguments += @('--', '--tree', $catalogPath, '--live')
         }
         & dotnet @testArguments

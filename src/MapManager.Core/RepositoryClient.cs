@@ -14,7 +14,7 @@ public interface IRepositoryClient
 
 public sealed class RepositoryClient : IRepositoryClient, IDisposable
 {
-    public const string RepositoryUrl = "https://github.com/Lumbridge/SCCT-Maps";
+    public const string RepositoryUrl = "https://github.com/OpenSCCT/SCCT-Maps";
     private readonly HttpClient http;
     public RepositoryClient() : this(new HttpClient { Timeout = TimeSpan.FromMinutes(10) }) { }
     public RepositoryClient(HttpClient http)
@@ -26,7 +26,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);timeout.CancelAfter(TimeSpan.FromSeconds(25));
         try
         {
-        using var reference = await http.GetAsync("https://api.github.com/repos/Lumbridge/SCCT-Maps/git/ref/heads/main", timeout.Token);
+        using var reference = await http.GetAsync("https://api.github.com/repos/OpenSCCT/SCCT-Maps/git/ref/heads/main", timeout.Token);
         if (reference.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
             throw new IOException("GitHub's request limit was reached. Your downloaded maps still work offline; refresh again later.");
         reference.EnsureSuccessStatusCode();
@@ -35,7 +35,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         if (target.GetProperty("type").GetString() != "commit") throw new InvalidDataException("The map catalog branch does not identify a commit.");
         string commit = target.GetProperty("sha").GetString()!;
         CatalogParser.ValidateHash(commit);
-        using var response = await http.GetAsync($"https://api.github.com/repos/Lumbridge/SCCT-Maps/git/trees/{commit}?recursive=1", timeout.Token);
+        using var response = await http.GetAsync($"https://api.github.com/repos/OpenSCCT/SCCT-Maps/git/trees/{commit}?recursive=1", timeout.Token);
         if (response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests)
             throw new IOException("GitHub's request limit was reached. Your downloaded maps still work offline; refresh again later.");
         response.EnsureSuccessStatusCode();
@@ -45,7 +45,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
         catalog = MapNames.Apply(catalog, await MapNamesAsync(catalog.Commit, timeout.Token));
         try
         {
-        using var assets = await http.GetAsync($"https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/{catalog.Commit}/asset-catalog.json", timeout.Token);
+        using var assets = await http.GetAsync($"https://raw.githubusercontent.com/OpenSCCT/SCCT-Maps/{catalog.Commit}/asset-catalog.json", timeout.Token);
         if (assets.StatusCode != HttpStatusCode.NotFound)
         {
             assets.EnsureSuccessStatusCode();
@@ -78,7 +78,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
     {
         try
         {
-            using var response = await http.GetAsync($"https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/{commit}/{MapNames.Path}", HttpCompletionOption.ResponseHeadersRead, cancel);
+            using var response = await http.GetAsync($"https://raw.githubusercontent.com/OpenSCCT/SCCT-Maps/{commit}/{MapNames.Path}", HttpCompletionOption.ResponseHeadersRead, cancel);
             if (!response.IsSuccessStatusCode || response.Content.Headers.ContentLength > MapNames.MaxBytes) return [];
             await using var input = await response.Content.ReadAsStreamAsync(cancel);
             var buffer = new byte[MapNames.MaxBytes + 1];int length = 0, read;
@@ -92,7 +92,7 @@ public sealed class RepositoryClient : IRepositoryClient, IDisposable
     private static string Raw(MapEntry map, string path)
     {
         CatalogParser.ValidateHash(map.Commit); SafePaths.ValidateRelative(path);
-        return "https://raw.githubusercontent.com/Lumbridge/SCCT-Maps/" + map.Commit + "/" + string.Join('/', path.Split('/').Select(Uri.EscapeDataString));
+        return "https://raw.githubusercontent.com/OpenSCCT/SCCT-Maps/" + map.Commit + "/" + string.Join('/', path.Split('/').Select(Uri.EscapeDataString));
     }
     public async Task DownloadAsync(MapEntry map, MapFile file, string destination, CancellationToken cancel)
     {
